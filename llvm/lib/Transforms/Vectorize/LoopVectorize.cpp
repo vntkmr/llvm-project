@@ -234,6 +234,11 @@ static cl::opt<PreferPredicateTy::Option> PreferPredicateOverEpilogue(
                          "prefers tail-folding, don't attempt vectorization if "
                          "tail-folding fails.")));
 
+static cl::opt<bool> PreferPredicateWithVPIntrinsics(
+    "prefer-predicate-with-vp-intrinsics", cl::init(false), cl::Hidden,
+    cl::desc("When vectorizing with tail-folding, generate vector predication "
+             "intrinsics."));
+
 static cl::opt<bool> MaximizeBandwidth(
     "vectorizer-maximize-bandwidth", cl::init(false), cl::Hidden,
     cl::desc("Maximize bandwidth when selecting vectorization factor which "
@@ -1573,6 +1578,11 @@ public:
     return foldTailByMasking() || Legal->blockNeedsPredication(BB);
   }
 
+  /// Returns true if VP intrinsics should be generated in the tail folded loop.
+  bool preferVPIntrinsics() const {
+    return foldTailByMasking() && PreferVPIntrinsics;
+  }
+
   /// A SmallMapVector to store the InLoop reduction op chains, mapping phi
   /// nodes to the chain of instructions representing the reductions. Uses a
   /// MapVector to ensure deterministic iteration order.
@@ -1713,6 +1723,9 @@ private:
 
   /// All blocks of loop are to be masked to fold tail of scalar iterations.
   bool FoldTailByMasking = false;
+
+  /// Control whether to generate VP intrinsics in vectorized code.
+  bool PreferVPIntrinsics = false;
 
   /// A map holding scalar costs for different vectorization factors. The
   /// presence of a cost for an instruction in the mapping indicates that the
@@ -5688,7 +5701,18 @@ LoopVectorizationCostModel::computeMaxVF(ElementCount UserVF, unsigned UserIC) {
   // FIXME: look for a smaller MaxVF that does divide TC rather than masking.
   if (Legal->prepareToFoldTailByMasking()) {
     FoldTailByMasking = true;
-    return MaxVF;
+    if (PreferPredicateWithVPIntrinsics) {
+      if (UserIC < 2) {
+        PreferPredicateWithVPIntrinsics = true;
+        LLVM_DEBUG(dbgs() << "LV: Preference for VP intrinsics indicated. Will "
+                             "try to generate VP Intrinsics.\n");
+      } else {
+        LLVM_DEBUG(dbgs() << "LV: Will not generate VP intrinsics since "
+                             "interleave count specified is greater than 1.\n");
+      }
+
+      return MaxVF;
+    }
   }
 
   // If there was a tail-folding hint/switch, but we can't fold the tail by
@@ -6174,6 +6198,11 @@ unsigned LoopVectorizationCostModel::selectInterleaveCount(ElementCount VF,
   // due to the increased register pressure.
 
   if (!isScalarEpilogueAllowed())
+    return 1;
+
+  // Do not interleave if VP intrinsics are preferred and no User IC is
+  // specified.
+  if (preferVPIntrinsics())
     return 1;
 
   // We used the distance for the interleave count.
@@ -8653,6 +8682,10 @@ bool VPRecipeBuilder::shouldWiden(Instruction *I, VFRange &Range) const {
                                                              Range);
 }
 
+bool VPRecipeBuilder::preferPredicatedWiden() const {
+  return CM.preferVPIntrinsics();
+}
+
 VPWidenRecipe *VPRecipeBuilder::tryToWiden(Instruction *I,
                                            ArrayRef<VPValue *> Operands) const {
   auto IsVectorizableOpcode = [](unsigned Opcode) {
@@ -8791,8 +8824,14 @@ VPRecipeBuilder::tryToCreateWidenRecipe(Instruction *Instr,
   if (auto *CI = dyn_cast<CallInst>(Instr))
     return toVPRecipeResult(tryToWidenCall(CI, Operands, Range));
 
-  if (isa<LoadInst>(Instr) || isa<StoreInst>(Instr))
+  if (isa<LoadInst>(Instr) || isa<StoreInst>(Instr)) {
+    if (preferPredicatedWiden()) {
+      // TODO-VK
+      // return toVPRecipeResult(tryToPredicatedWidenMemory(Instr, Range,
+      // Plan));
+    }
     return toVPRecipeResult(tryToWidenMemory(Instr, Operands, Range, Plan));
+  }
 
   VPRecipeBase *Recipe;
   if (auto Phi = dyn_cast<PHINode>(Instr)) {
@@ -8831,6 +8870,10 @@ VPRecipeBuilder::tryToCreateWidenRecipe(Instruction *Instr,
         *SI, make_range(Operands.begin(), Operands.end()), InvariantCond));
   }
 
+  if (preferPredicatedWiden()) {
+    // TODO-VK
+    // return toVPRecipeResult(tryToPredicatedWiden(Instr, Plan));
+  }
   return toVPRecipeResult(tryToWiden(Instr, Operands));
 }
 

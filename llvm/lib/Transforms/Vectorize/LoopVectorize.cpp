@@ -60,6 +60,7 @@
 #include "VPlanHCFGBuilder.h"
 #include "VPlanPredicator.h"
 #include "VPlanTransforms.h"
+#include "VPlanValue.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -5703,16 +5704,15 @@ LoopVectorizationCostModel::computeMaxVF(ElementCount UserVF, unsigned UserIC) {
     FoldTailByMasking = true;
     if (PreferPredicateWithVPIntrinsics) {
       if (UserIC < 2) {
-        PreferPredicateWithVPIntrinsics = true;
+        PreferVPIntrinsics = true;
         LLVM_DEBUG(dbgs() << "LV: Preference for VP intrinsics indicated. Will "
                              "try to generate VP Intrinsics.\n");
       } else {
         LLVM_DEBUG(dbgs() << "LV: Will not generate VP intrinsics since "
                              "interleave count specified is greater than 1.\n");
       }
-
-      return MaxVF;
     }
+    return MaxVF;
   }
 
   // If there was a tail-folding hint/switch, but we can't fold the tail by
@@ -8510,10 +8510,17 @@ VPValue *VPRecipeBuilder::createBlockInMask(BasicBlock *BB, VPlanPtr &Plan) {
   return BlockMaskCache[BB] = BlockMask;
 }
 
-VPRecipeBase *VPRecipeBuilder::tryToWidenMemory(Instruction *I,
-                                                ArrayRef<VPValue *> Operands,
-                                                VFRange &Range,
-                                                VPlanPtr &Plan) {
+VPValue *VPRecipeBuilder::getOrCreateEVL(VPlanPtr &Plan) {
+  if (!EVL) {
+    auto *EVLRecipe = new VPWidenEVLRecipe();
+    Builder.getInsertBlock()->appendRecipe(EVLRecipe);
+    EVL = EVLRecipe->getEVL();
+  }
+  return EVL;
+}
+
+bool VPRecipeBuilder::validateWidenMemory(Instruction *I,
+                                          VFRange &Range) const {
   assert((isa<LoadInst>(I) || isa<StoreInst>(I)) &&
          "Must be called with either a load or store");
 
@@ -8532,7 +8539,14 @@ VPRecipeBase *VPRecipeBuilder::tryToWidenMemory(Instruction *I,
     return Decision != LoopVectorizationCostModel::CM_Scalarize;
   };
 
-  if (!LoopVectorizationPlanner::getDecisionAndClampRange(willWiden, Range))
+  return (LoopVectorizationPlanner::getDecisionAndClampRange(willWiden, Range));
+}
+
+VPRecipeBase *VPRecipeBuilder::tryToWidenMemory(Instruction *I,
+                                                ArrayRef<VPValue *> Operands,
+                                                VFRange &Range,
+                                                VPlanPtr &Plan) {
+  if (!validateWidenMemory(I, Range))
     return nullptr;
 
   VPValue *Mask = nullptr;
@@ -8545,6 +8559,24 @@ VPRecipeBase *VPRecipeBuilder::tryToWidenMemory(Instruction *I,
   StoreInst *Store = cast<StoreInst>(I);
   return new VPWidenMemoryInstructionRecipe(*Store, Operands[1], Operands[0],
                                             Mask);
+}
+
+VPRecipeBase *VPRecipeBuilder::tryToPredicatedWidenMemory(Instruction *I,
+                                                          VFRange &Range,
+                                                          VPlanPtr &Plan) {
+  if (!validateWidenMemory(I, Range))
+    return nullptr;
+
+  VPValue *Mask = createBlockInMask(I->getParent(), Plan);
+  VPValue *EVL = getOrCreateEVL(Plan);
+  VPValue *Addr = Plan->getOrAddVPValue(getLoadStorePointerOperand(I));
+  if (LoadInst *Load = dyn_cast<LoadInst>(I))
+    return new VPPredicatedWidenMemoryInstructionRecipe(*Load, Addr, Mask, EVL);
+
+  StoreInst *Store = cast<StoreInst>(I);
+  VPValue *StoredValue = Plan->getOrAddVPValue(Store->getValueOperand());
+  return new VPPredicatedWidenMemoryInstructionRecipe(*Store, Addr, StoredValue,
+                                                      Mask, EVL);
 }
 
 VPWidenIntOrFpInductionRecipe *
@@ -8686,8 +8718,7 @@ bool VPRecipeBuilder::preferPredicatedWiden() const {
   return CM.preferVPIntrinsics();
 }
 
-VPWidenRecipe *VPRecipeBuilder::tryToWiden(Instruction *I,
-                                           ArrayRef<VPValue *> Operands) const {
+bool VPRecipeBuilder::validateWiden(Instruction *I) const {
   auto IsVectorizableOpcode = [](unsigned Opcode) {
     switch (Opcode) {
     case Instruction::Add:
@@ -8729,11 +8760,27 @@ VPWidenRecipe *VPRecipeBuilder::tryToWiden(Instruction *I,
     return false;
   };
 
-  if (!IsVectorizableOpcode(I->getOpcode()))
+  return IsVectorizableOpcode(I->getOpcode());
+}
+
+VPWidenRecipe *VPRecipeBuilder::tryToWiden(Instruction *I,
+                                           ArrayRef<VPValue *> Operands) const {
+  if (!validateWiden(I))
     return nullptr;
 
   // Success: widen this instruction.
   return new VPWidenRecipe(*I, make_range(Operands.begin(), Operands.end()));
+}
+
+VPPredicatedWidenRecipe *VPRecipeBuilder::tryToPredicatedWiden(Instruction *I,
+                                                               VPlanPtr &Plan) {
+  if (!validateWiden(I))
+    return nullptr;
+
+  VPValue *Mask = createBlockInMask(I->getParent(), Plan);
+  VPValue *EVL = getOrCreateEVL(Plan);
+  return new VPPredicatedWidenRecipe(*I, Plan->mapToVPValues(I->operands()),
+                                     Mask, EVL);
 }
 
 VPBasicBlock *VPRecipeBuilder::handleReplication(
@@ -8826,9 +8873,7 @@ VPRecipeBuilder::tryToCreateWidenRecipe(Instruction *Instr,
 
   if (isa<LoadInst>(Instr) || isa<StoreInst>(Instr)) {
     if (preferPredicatedWiden()) {
-      // TODO-VK
-      // return toVPRecipeResult(tryToPredicatedWidenMemory(Instr, Range,
-      // Plan));
+      return toVPRecipeResult(tryToPredicatedWidenMemory(Instr, Range, Plan));
     }
     return toVPRecipeResult(tryToWidenMemory(Instr, Operands, Range, Plan));
   }
@@ -8871,8 +8916,7 @@ VPRecipeBuilder::tryToCreateWidenRecipe(Instruction *Instr,
   }
 
   if (preferPredicatedWiden()) {
-    // TODO-VK
-    // return toVPRecipeResult(tryToPredicatedWiden(Instr, Plan));
+    return toVPRecipeResult(tryToPredicatedWiden(Instr, Plan));
   }
   return toVPRecipeResult(tryToWiden(Instr, Operands));
 }
@@ -9260,6 +9304,12 @@ void VPWidenRecipe::execute(VPTransformState &State) {
   State.ILV->widenInstruction(*getUnderlyingInstr(), this, *this, State);
 }
 
+void VPPredicatedWidenRecipe::execute(VPTransformState &State) {
+  // TODO: Implement
+  assert(!PreferPredicateWithVPIntrinsics &&
+         "Widening to VP intrinsics not supported yet.");
+}
+
 void VPWidenGEPRecipe::execute(VPTransformState &State) {
   State.ILV->widenGEP(cast<GetElementPtrInst>(getUnderlyingInstr()), this,
                       *this, State.UF, State.VF, IsPtrLoopInvariant,
@@ -9474,6 +9524,19 @@ void VPWidenMemoryInstructionRecipe::execute(VPTransformState &State) {
   State.ILV->vectorizeMemoryInstruction(
       &Ingredient, State, StoredValue ? nullptr : getVPSingleValue(), getAddr(),
       StoredValue, getMask());
+}
+
+void VPPredicatedWidenMemoryInstructionRecipe::execute(
+    VPTransformState &State) {
+  // TODO: Implement
+  assert(!PreferPredicateWithVPIntrinsics &&
+         "Widening to VP intrinsics not supported yet.");
+}
+
+void VPWidenEVLRecipe::execute(VPTransformState &State) {
+  // TODO: Implement
+  assert(!PreferPredicateWithVPIntrinsics &&
+         "Widening to VP intrinsics not supported yet.");
 }
 
 // Determine how to lower the scalar epilogue, which depends on 1) optimising

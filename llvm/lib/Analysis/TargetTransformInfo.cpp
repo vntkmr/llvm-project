@@ -1048,6 +1048,10 @@ bool TargetTransformInfo::hasActiveVectorLength() const {
   return TTIImpl->hasActiveVectorLength();
 }
 
+bool TargetTransformInfo::useCustomActiveVectorLengthIntrinsic() const {
+  return TTIImpl->useCustomActiveVectorLengthIntrinsic();
+}
+
 InstructionCost
 TargetTransformInfo::getInstructionLatency(const Instruction *I) const {
   return TTIImpl->getInstructionLatency(I);

@@ -43,6 +43,7 @@
 #include "llvm/Support/AtomicOrdering.h"
 #include "llvm/Support/CBindingWrapping.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/TypeSize.h"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -2551,6 +2552,12 @@ public:
   Value *CreatePreserveStructAccessIndex(Type *ElTy, Value *Base,
                                          unsigned Index, unsigned FieldIndex,
                                          MDNode *DbgInfo);
+
+  /// Return an all true boolean vector of size and scalability \p NumElts.
+  Value *getTrueVector(ElementCount NumElts) {
+    VectorType *VTy = VectorType::get(Type::getInt1Ty(Context), NumElts);
+    return Constant::getAllOnesValue(VTy);
+  }
 
 private:
   /// Helper function that creates an assume intrinsic call that

@@ -1366,6 +1366,26 @@ def int_experimental_stepvector : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
 
 //===---------------- Vector Predication Intrinsics --------------===//
 
+// Memory Intrinsics
+def int_vp_store : DefaultAttrsIntrinsic<[],
+                             [ llvm_anyvector_ty,
+                               LLVMAnyPointerType<LLVMMatchType<0>>,
+                               llvm_i32_ty,
+                               LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                               llvm_i32_ty],
+                             [ NoCapture<ArgIndex<1>>, IntrNoSync, IntrWriteMem,
+                               IntrArgMemOnly, IntrWillReturn,
+                               ImmArg<ArgIndex<2>> ]>;
+
+def int_vp_load  : DefaultAttrsIntrinsic<[ llvm_anyvector_ty],
+                             [ LLVMAnyPointerType<LLVMMatchType<0>>,
+                               llvm_i32_ty,
+                               LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                               llvm_i32_ty],
+                             [ NoCapture<ArgIndex<0>>, IntrNoSync, IntrReadMem,
+                               IntrWillReturn, IntrArgMemOnly,
+                               ImmArg<ArgIndex<1>> ]>;
+
 // Speculatable Binary operators
 let IntrProperties = [IntrSpeculatable, IntrNoMem, IntrNoSync, IntrWillReturn] in {
   def int_vp_add : DefaultAttrsIntrinsic<[ llvm_anyvector_ty ],
@@ -1472,6 +1492,11 @@ let IntrProperties =
 def int_get_active_lane_mask:
   DefaultAttrsIntrinsic<[llvm_anyvector_ty],
             [llvm_anyint_ty, LLVMMatchType<1>],
+            [IntrNoMem, IntrNoSync, IntrWillReturn]>;
+
+def int_experimental_set_vector_length:
+  DefaultAttrsIntrinsic<[llvm_i32_ty],
+            [llvm_anyint_ty, llvm_i32_ty, llvm_i32_ty],
             [IntrNoMem, IntrNoSync, IntrWillReturn]>;
 
 //===-------------------------- Masked Intrinsics -------------------------===//

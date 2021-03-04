@@ -1412,6 +1412,13 @@ public:
   /// \returns How the target needs this vector-predicated operation to be
   /// transformed.
   VPLegalization getVPLegalizationStrategy(const VPIntrinsic &PI) const;
+
+  /// If the target uses custom instruction to compute
+  /// active vector length, use an intrinsic in the IR that will be lowered to
+  /// this instruction. Else, the IR will use instructions for computing Min(VF,
+  /// TripCount - Induction).
+  bool useCustomActiveVectorLengthIntrinsic() const;
+
   /// @}
 
   /// @}
@@ -1721,6 +1728,7 @@ public:
   virtual unsigned getGISelRematGlobalCost() const = 0;
   virtual bool supportsScalableVectors() const = 0;
   virtual bool hasActiveVectorLength() const = 0;
+  virtual bool useCustomActiveVectorLengthIntrinsic() const = 0;
   virtual InstructionCost getInstructionLatency(const Instruction *I) = 0;
   virtual VPLegalization
   getVPLegalizationStrategy(const VPIntrinsic &PI) const = 0;
@@ -2290,6 +2298,10 @@ public:
 
   bool hasActiveVectorLength() const override {
     return Impl.hasActiveVectorLength();
+  }
+
+  bool useCustomActiveVectorLengthIntrinsic() const override {
+    return Impl.useCustomActiveVectorLengthIntrinsic();
   }
 
   InstructionCost getInstructionLatency(const Instruction *I) override {

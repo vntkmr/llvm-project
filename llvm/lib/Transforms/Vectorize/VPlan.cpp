@@ -580,6 +580,7 @@ bool VPRecipeBase::mayHaveSideEffects() const {
   case VPWidenPHISC:
   case VPBlendSC:
   case VPWidenSC:
+  case VPPredicatedWidenSC:
   case VPWidenGEPSC:
   case VPReductionSC:
   case VPWidenSelectSC: {
@@ -687,6 +688,12 @@ void VPInstruction::generateInstruction(VPTransformState &State,
     State.set(this, Call, Part);
     break;
   }
+  case VPInstruction::AllTrueMask: {
+    Value *AllTrueMask = Builder.getTrueVector(State.VF);
+    State.set(this, AllTrueMask, Part);
+    break;
+  }
+
   default:
     llvm_unreachable("Unsupported opcode for instruction");
   }
@@ -729,7 +736,9 @@ void VPInstruction::print(raw_ostream &O, const Twine &Indent,
   case VPInstruction::ActiveLaneMask:
     O << "active lane mask";
     break;
-
+  case VPInstruction::AllTrueMask:
+    O << "all true mask";
+    break;
   default:
     O << Instruction::getOpcodeName(getOpcode());
   }
@@ -1069,6 +1078,14 @@ void VPWidenRecipe::print(raw_ostream &O, const Twine &Indent,
   printOperands(O, SlotTracker);
 }
 
+void VPPredicatedWidenRecipe::print(raw_ostream &O, const Twine &Indent,
+                                    VPSlotTracker &SlotTracker) const {
+  O << Indent << "PREDICATED-WIDEN ";
+  printAsOperand(O, SlotTracker);
+  O << " = " << getUnderlyingInstr()->getOpcodeName() << " ";
+  printOperands(O, SlotTracker);
+}
+
 void VPWidenIntOrFpInductionRecipe::print(raw_ostream &O, const Twine &Indent,
                                           VPSlotTracker &SlotTracker) const {
   O << Indent << "WIDEN-INDUCTION";
@@ -1187,6 +1204,19 @@ void VPWidenMemoryInstructionRecipe::print(raw_ostream &O, const Twine &Indent,
 }
 #endif
 
+void VPPredicatedWidenMemoryInstructionRecipe::print(
+    raw_ostream &O, const Twine &Indent, VPSlotTracker &SlotTracker) const {
+  O << Indent << "PREDICATED-WIDEN ";
+
+  if (!isStore()) {
+    getVPValue()->printAsOperand(O, SlotTracker);
+    O << " = ";
+  }
+  O << Instruction::getOpcodeName(Ingredient.getOpcode()) << " ";
+
+  printOperands(O, SlotTracker);
+}
+
 void VPWidenCanonicalIVRecipe::execute(VPTransformState &State) {
   Value *CanonicalIV = State.CanonicalIV;
   Type *STy = CanonicalIV->getType();
@@ -1220,6 +1250,13 @@ void VPWidenCanonicalIVRecipe::print(raw_ostream &O, const Twine &Indent,
   O << " = WIDEN-CANONICAL-INDUCTION";
 }
 #endif
+
+void VPWidenEVLRecipe::print(raw_ostream &O, const Twine &Indent,
+                             VPSlotTracker &SlotTracker) const {
+  O << Indent << "EMIT ";
+  getEVL()->printAsOperand(O, SlotTracker);
+  O << " = GENERATE-EXPLICIT-VECTOR-LENGTH";
+}
 
 template void DomTreeBuilder::Calculate<VPDominatorTree>(VPDominatorTree &DT);
 

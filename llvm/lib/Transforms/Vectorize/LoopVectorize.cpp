@@ -559,7 +559,8 @@ public:
   /// vectorized loop.
   void vectorizeMemoryInstruction(Instruction *Instr, VPTransformState &State,
                                   VPValue *Def, VPValue *Addr,
-                                  VPValue *StoredValue, VPValue *BlockInMask);
+                                  VPValue *StoredValue, VPValue *BlockInMask,
+                                  VPValue *EVL = nullptr);
 
   /// Set the debug location in the builder using the debug location in
   /// the instruction.
@@ -2851,7 +2852,7 @@ void InnerLoopVectorizer::vectorizeInterleaveGroup(
 
 void InnerLoopVectorizer::vectorizeMemoryInstruction(
     Instruction *Instr, VPTransformState &State, VPValue *Def, VPValue *Addr,
-    VPValue *StoredValue, VPValue *BlockInMask) {
+    VPValue *StoredValue, VPValue *BlockInMask, VPValue *EVL) {
   // Attempt to issue a wide load.
   LoadInst *LI = dyn_cast<LoadInst>(Instr);
   StoreInst *SI = dyn_cast<StoreInst>(Instr);
@@ -2879,6 +2880,13 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
       Reverse || (Decision == LoopVectorizationCostModel::CM_Widen);
   bool CreateGatherScatter =
       (Decision == LoopVectorizationCostModel::CM_GatherScatter);
+
+  if (Reverse)
+    assert(!EVL &&
+           "Vector reverse not supported for predicated vectorization.");
+  if (CreateGatherScatter)
+    assert(!EVL && "Gather/Scatter operations not supported for "
+                   "predicated vectorization.");
 
   // Either Ptr feeds a vector load/store, or a vector GEP should feed a vector
   // gather/scatter. Otherwise Decision should have been to Scalarize.
@@ -2928,6 +2936,24 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
     return Builder.CreateBitCast(PartPtr, DataTy->getPointerTo(AddressSpace));
   };
 
+  auto MaskValue = [&](unsigned Part, ElementCount EC,
+                       bool isMaskRequired) -> Value * {
+    // if mask is not required we use an all ones mask for the mask argument of
+    // the VP intrinsic.
+    if (!isMaskRequired)
+      return Builder.CreateTrueVector(EC);
+
+    // The outermost mask can be lowered as an all ones mask when using
+    // EVL if it only masks the lanes beyond the trip count.
+    // FIXME: This is a crude hack to check the outer mask condition. We should
+    // mark such a case separately in the VPlan.
+    if (isa<VPInstruction>(BlockInMask) &&
+        cast<VPInstruction>(BlockInMask)->getOpcode() == VPInstruction::ICmpULE)
+      return Builder.CreateTrueVector(EC);
+    else
+      return BlockInMaskParts[Part];
+  };
+
   // Handle Stores:
   if (SI) {
     setDebugLocFromInst(Builder, SI);
@@ -2935,6 +2961,13 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
     for (unsigned Part = 0; Part < UF; ++Part) {
       Instruction *NewSI = nullptr;
       Value *StoredVal = State.get(StoredValue, Part);
+
+      // If EVL is not nullptr, then EVL must be a valid value set during plan
+      // creation, possibly default value = whole vector register length. EVL is
+      // created only if TTI prefers predicated vectorization, thus if EVL is
+      // not nullptr it also implies preference for predicated vectorization.
+      Value *EVLPart = EVL ? State.get(EVL, Part) : nullptr;
+
       if (CreateGatherScatter) {
         Value *MaskPart = isMaskRequired ? BlockInMaskParts[Part] : nullptr;
         Value *VectorGep = State.get(Addr, Part);
@@ -2949,11 +2982,25 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
           // another expression. So don't call resetVectorValue(StoredVal).
         }
         auto *VecPtr = CreateVecPtr(Part, State.get(Addr, VPIteration(0, 0)));
-        if (isMaskRequired)
+        // if EVLPart is not null, we can vectorize using predicated
+        // intrinsic.
+        if (EVLPart) {
+          VectorType *StoredValTy = cast<VectorType>(StoredVal->getType());
+          Value *BlockInMaskPart =
+              MaskValue(Part, StoredValTy->getElementCount(), isMaskRequired);
+          Value *EVLPartI32 = Builder.CreateSExtOrTrunc(
+              EVLPart, Type::getInt32Ty(Builder.getContext()));
+          NewSI = Builder.CreateIntrinsic(
+              Intrinsic::vp_store, {StoredValTy, VecPtr->getType()},
+              {StoredVal, VecPtr, Builder.getInt32(Alignment.value()),
+               BlockInMaskPart, EVLPartI32},
+              "vp.op.store");
+        } else if (isMaskRequired) {
           NewSI = Builder.CreateMaskedStore(StoredVal, VecPtr, Alignment,
                                             BlockInMaskParts[Part]);
-        else
+        } else {
           NewSI = Builder.CreateAlignedStore(StoredVal, VecPtr, Alignment);
+        }
       }
       addMetadata(NewSI, SI);
     }
@@ -2965,6 +3012,13 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
   setDebugLocFromInst(Builder, LI);
   for (unsigned Part = 0; Part < UF; ++Part) {
     Value *NewLI;
+
+    // If EVL is not nullptr, then EVL must be a valid value set during plan
+    // creation, possibly default value = whole vector register length. EVL is
+    // created only if TTI prefers predicated vectorization, thus if EVL is
+    // not nullptr it also implies preference for predicated vectorization.
+    Value *EVLPart = EVL ? State.get(EVL, Part) : nullptr;
+
     if (CreateGatherScatter) {
       Value *MaskPart = isMaskRequired ? BlockInMaskParts[Part] : nullptr;
       Value *VectorGep = State.get(Addr, Part);
@@ -2973,13 +3027,27 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
       addMetadata(NewLI, LI);
     } else {
       auto *VecPtr = CreateVecPtr(Part, State.get(Addr, VPIteration(0, 0)));
-      if (isMaskRequired)
+      if (EVLPart) {
+        VectorType *VecTy =
+            cast<VectorType>(VecPtr->getType()->getPointerElementType());
+        Value *BlockInMaskPart =
+            MaskValue(Part, VecTy->getElementCount(), isMaskRequired);
+        Value *EVLPartI32 = Builder.CreateSExtOrTrunc(
+            EVLPart, Type::getInt32Ty(Builder.getContext()));
+        NewLI = Builder.CreateIntrinsic(
+            Intrinsic::vp_load,
+            {VecPtr->getType()->getPointerElementType(), VecPtr->getType()},
+            {VecPtr, Builder.getInt32(Alignment.value()), BlockInMaskPart,
+             EVLPartI32},
+            "vp.op.load");
+      } else if (isMaskRequired) {
         NewLI = Builder.CreateMaskedLoad(
             VecPtr, Alignment, BlockInMaskParts[Part], PoisonValue::get(DataTy),
             "wide.masked.load");
-      else
+      } else {
         NewLI =
             Builder.CreateAlignedLoad(DataTy, VecPtr, Alignment, "wide.load");
+      }
 
       // Add metadata to the load, but setVectorValue to the reverse shuffle.
       addMetadata(NewLI, LI);
@@ -9526,7 +9594,10 @@ void VPWidenMemoryInstructionRecipe::execute(VPTransformState &State) {
 
 void VPPredicatedWidenMemoryInstructionRecipe::execute(
     VPTransformState &State) {
-  // TODO: Implement
+  VPValue *StoredValue = isStore() ? getStoredValue() : nullptr;
+  State.ILV->vectorizeMemoryInstruction(
+      &Ingredient, State, StoredValue ? nullptr : getVPValue(), getAddr(),
+      StoredValue, getMask(), getEVL());
 }
 
 void VPWidenEVLRecipe::execute(VPTransformState &State) {

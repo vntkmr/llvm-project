@@ -1420,6 +1420,11 @@ def int_get_active_lane_mask:
             [llvm_anyint_ty, LLVMMatchType<1>],
             [IntrNoMem, IntrNoSync, IntrWillReturn]>;
 
+def int_experimental_set_vector_length: 
+  DefaultAttrsIntrinsic<[llvm_i32_ty],
+            [llvm_anyint_ty, llvm_i32_ty, llvm_i32_ty],
+            [IntrNoMem, IntrNoSync, IntrWillReturn]>;
+
 //===-------------------------- Masked Intrinsics -------------------------===//
 //
 def int_masked_load:

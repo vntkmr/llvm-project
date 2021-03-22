@@ -1379,6 +1379,12 @@ public:
   /// Intrinsics") Use of %evl is discouraged when that is not the case.
   bool hasActiveVectorLength() const;
 
+  /// If the target uses custom instruction to compute
+  /// active vector length, use an intrinsic in the IR that will be lowered to
+  /// this instruction. Else, the IR will use instructions for computing Min(VF,
+  /// TripCount - Induction).
+  bool useCustomActiveVectorLengthIntrinsic() const;
+
   /// @}
 
   /// @}
@@ -1687,6 +1693,7 @@ public:
   virtual unsigned getGISelRematGlobalCost() const = 0;
   virtual bool supportsScalableVectors() const = 0;
   virtual bool hasActiveVectorLength() const = 0;
+  virtual bool useCustomActiveVectorLengthIntrinsic() const = 0;
   virtual InstructionCost getInstructionLatency(const Instruction *I) = 0;
 };
 
@@ -2254,6 +2261,10 @@ public:
 
   bool hasActiveVectorLength() const override {
     return Impl.hasActiveVectorLength();
+  }
+
+  bool useCustomActiveVectorLengthIntrinsic() const override {
+    return Impl.useCustomActiveVectorLengthIntrinsic();
   }
 
   InstructionCost getInstructionLatency(const Instruction *I) override {

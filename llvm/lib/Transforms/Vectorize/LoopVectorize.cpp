@@ -2902,21 +2902,6 @@ void InnerLoopVectorizer::vectorizeInterleaveGroup(
   }
 }
 
-/// A helper function to check if the outermost mask does not indicate any
-/// control flow within the loop. The outermost mask can be lowered as an all
-/// ones mask when using EVL if it only masks the lanes beyond the trip count.
-/// FIXME: This is a crude hack to check the outer mask condition. We should
-/// mark such a case separately in the VPlan.
-static bool useAllTrueMask(VPValue *BlockInMask) {
-  if (PreferPredicateWithVPIntrinsics ==
-      PreferVPIntrinsicsTy::WithoutAVLSupport)
-    return false;
-
-  return isa<VPInstruction>(BlockInMask) &&
-         cast<VPInstruction>(BlockInMask)->getOpcode() ==
-             VPInstruction::ICmpULE;
-}
-
 void InnerLoopVectorizer::vectorizeMemoryInstruction(
     Instruction *Instr, VPTransformState &State, VPValue *Def, VPValue *Addr,
     VPValue *StoredValue, VPValue *BlockInMask, VPValue *EVL) {
@@ -3003,23 +2988,6 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
     return Builder.CreateBitCast(PartPtr, DataTy->getPointerTo(AddressSpace));
   };
 
-  auto MaskValue = [&](unsigned Part, ElementCount EC,
-                       bool isMaskRequired) -> Value * {
-    // if mask is not required we use an all ones mask for the mask argument of
-    // the VP intrinsic.
-    if (!isMaskRequired)
-      return Builder.CreateTrueVector(EC);
-
-    // The outermost mask can be lowered as an all ones mask when using
-    // EVL if it only masks the lanes beyond the trip count.
-    // FIXME: This is a crude hack to check the outer mask condition. We should
-    // mark such a case separately in the VPlan.
-    if (useAllTrueMask(BlockInMask))
-      return Builder.CreateTrueVector(EC);
-    else
-      return BlockInMaskParts[Part];
-  };
-
   // Handle Stores:
   if (SI) {
     setDebugLocFromInst(Builder, SI);
@@ -3051,9 +3019,10 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
         // if EVLPart is not null, we can vectorize using predicated
         // intrinsic.
         if (EVLPart) {
+          assert(isMaskRequired &&
+                 "Mask argument is required for VP intrinsics.");
           VectorType *StoredValTy = cast<VectorType>(StoredVal->getType());
-          Value *BlockInMaskPart =
-              MaskValue(Part, StoredValTy->getElementCount(), isMaskRequired);
+          Value *BlockInMaskPart = BlockInMaskParts[Part];
           Value *EVLPartI32 = Builder.CreateSExtOrTrunc(
               EVLPart, Type::getInt32Ty(Builder.getContext()));
           NewSI = Builder.CreateIntrinsic(
@@ -3093,10 +3062,9 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
     } else {
       auto *VecPtr = CreateVecPtr(Part, State.get(Addr, VPIteration(0, 0)));
       if (EVLPart) {
-        VectorType *VecTy =
-            cast<VectorType>(VecPtr->getType()->getPointerElementType());
-        Value *BlockInMaskPart =
-            MaskValue(Part, VecTy->getElementCount(), isMaskRequired);
+        assert(isMaskRequired &&
+               "Mask argument is required for VP intrinsics.");
+        Value *BlockInMaskPart = BlockInMaskParts[Part];
         Value *EVLPartI32 = Builder.CreateSExtOrTrunc(
             EVLPart, Type::getInt32Ty(Builder.getContext()));
         NewLI = Builder.CreateIntrinsic(
@@ -5070,9 +5038,7 @@ void InnerLoopVectorizer::widenPredicatedInstruction(Instruction &I,
       Ops.push_back(State.get(User.getOperand(OpIdx), Part));
 
     VectorType *OpTy = cast<VectorType>(Ops[0]->getType());
-    Value *MaskOp = useAllTrueMask(BlockInMask)
-                        ? Builder.CreateTrueVector(OpTy->getElementCount())
-                        : State.get(BlockInMask, Part);
+    Value *MaskOp = State.get(BlockInMask, Part);
     Ops.push_back(MaskOp);
 
     Value *EVLOp = State.get(EVL, Part);
@@ -8675,6 +8641,19 @@ VPValue *VPRecipeBuilder::createBlockInMask(BasicBlock *BB, VPlanPtr &Plan) {
   if (OrigLoop->getHeader() == BB) {
     if (!CM.blockNeedsPredication(BB))
       return BlockMaskCache[BB] = BlockMask; // Loop incoming mask is all-one.
+
+    // if header block needs predication then it is only because tail-folding is
+    // enabled. If we are using VP intrinsics for a target with vector length
+    // predication support, this mask (icmp ule %IV %BTC) becomes redundant with
+    // EVL, which means unless we are using VP intrinsics without vector length
+    // predication support we can replace this mask with an all-true mask for
+    // possibly better latency.
+    if (CM.preferVPIntrinsics() &&
+        PreferPredicateWithVPIntrinsics !=
+            PreferVPIntrinsicsTy::WithoutAVLSupport) {
+      BlockMask = Builder.createNaryOp(VPInstruction::AllTrueMask, {});
+      return BlockMaskCache[BB] = BlockMask;
+    }
 
     // Create the block in mask as the first non-phi instruction in the block.
     VPBuilder::InsertPointGuard Guard(Builder);

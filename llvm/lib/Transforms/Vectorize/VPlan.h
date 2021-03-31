@@ -725,6 +725,7 @@ public:
     SLPLoad,
     SLPStore,
     ActiveLaneMask,
+    AllTrueMask,
   };
 
 private:

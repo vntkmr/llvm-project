@@ -620,6 +620,12 @@ void VPInstruction::generateInstruction(VPTransformState &State,
     State.set(this, Call, Part);
     break;
   }
+  case VPInstruction::AllTrueMask: {
+    Value *AllTrueMask = Builder.CreateTrueVector(State.VF);
+    State.set(this, AllTrueMask, Part);
+    break;
+  }
+
   default:
     llvm_unreachable("Unsupported opcode for instruction");
   }
@@ -662,7 +668,9 @@ void VPInstruction::print(raw_ostream &O, const Twine &Indent,
   case VPInstruction::ActiveLaneMask:
     O << "active lane mask";
     break;
-
+  case VPInstruction::AllTrueMask:
+    O << "all true mask";
+    break;
   default:
     O << Instruction::getOpcodeName(getOpcode());
   }

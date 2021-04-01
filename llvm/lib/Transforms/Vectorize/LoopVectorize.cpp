@@ -60,7 +60,6 @@
 #include "VPlanHCFGBuilder.h"
 #include "VPlanPredicator.h"
 #include "VPlanTransforms.h"
-#include "VPlanValue.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -3021,12 +3020,11 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
         if (EVLPart) {
           assert(isMaskRequired &&
                  "Mask argument is required for VP intrinsics.");
-          VectorType *StoredValTy = cast<VectorType>(StoredVal->getType());
           Value *BlockInMaskPart = BlockInMaskParts[Part];
-          Value *EVLPartI32 = Builder.CreateSExtOrTrunc(
-              EVLPart, Type::getInt32Ty(Builder.getContext()));
+          Value *EVLPartI32 =
+              Builder.CreateSExtOrTrunc(EVLPart, Builder.getInt32Ty());
           NewSI = Builder.CreateIntrinsic(
-              Intrinsic::vp_store, {StoredValTy, VecPtr->getType()},
+              Intrinsic::vp_store, {StoredVal->getType(), VecPtr->getType()},
               {StoredVal, VecPtr, Builder.getInt32(Alignment.value()),
                BlockInMaskPart, EVLPartI32});
         } else if (isMaskRequired) {
@@ -3065,8 +3063,8 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(
         assert(isMaskRequired &&
                "Mask argument is required for VP intrinsics.");
         Value *BlockInMaskPart = BlockInMaskParts[Part];
-        Value *EVLPartI32 = Builder.CreateSExtOrTrunc(
-            EVLPart, Type::getInt32Ty(Builder.getContext()));
+        Value *EVLPartI32 =
+            Builder.CreateSExtOrTrunc(EVLPart, Builder.getInt32Ty());
         NewLI = Builder.CreateIntrinsic(
             Intrinsic::vp_load,
             {VecPtr->getType()->getPointerElementType(), VecPtr->getType()},
@@ -5029,7 +5027,6 @@ void InnerLoopVectorizer::widenPredicatedInstruction(Instruction &I,
   assert(getVPIntrInstr(Opcode) != Intrinsic::not_intrinsic &&
          "Instruction does not have VP intrinsic support.");
 
-  // Just widen unops and binops.
   setDebugLocFromInst(Builder, &I);
 
   for (unsigned Part = 0; Part < UF; ++Part) {
@@ -8732,7 +8729,7 @@ bool VPRecipeBuilder::validateWidenMemory(Instruction *I,
     return Decision != LoopVectorizationCostModel::CM_Scalarize;
   };
 
-  return (LoopVectorizationPlanner::getDecisionAndClampRange(willWiden, Range));
+  return LoopVectorizationPlanner::getDecisionAndClampRange(willWiden, Range);
 }
 
 VPRecipeBase *VPRecipeBuilder::tryToWidenMemory(Instruction *I,
@@ -9065,9 +9062,9 @@ VPRecipeBuilder::tryToCreateWidenRecipe(Instruction *Instr,
     return toVPRecipeResult(tryToWidenCall(CI, Operands, Range));
 
   if (isa<LoadInst>(Instr) || isa<StoreInst>(Instr)) {
-    if (preferPredicatedWiden()) {
+    if (preferPredicatedWiden())
       return toVPRecipeResult(tryToPredicatedWidenMemory(Instr, Range, Plan));
-    }
+
     return toVPRecipeResult(tryToWidenMemory(Instr, Operands, Range, Plan));
   }
 
@@ -9108,9 +9105,9 @@ VPRecipeBuilder::tryToCreateWidenRecipe(Instruction *Instr,
         *SI, make_range(Operands.begin(), Operands.end()), InvariantCond));
   }
 
-  if (preferPredicatedWiden()) {
+  if (preferPredicatedWiden())
     return toVPRecipeResult(tryToPredicatedWiden(Instr, Plan));
-  }
+
   return toVPRecipeResult(tryToWiden(Instr, Operands));
 }
 
@@ -9747,7 +9744,7 @@ Value *InnerLoopVectorizer::createEVL() {
 
   Value *Remaining = Builder.CreateSub(TripCount, Induction);
   // FIXME: This is a proof-of-concept naive implementation to demonstrate using
-  // a target dependent intrinisc to compute the vector length.
+  // a target dependent intrinsic to compute the vector length.
   if (TTI->useCustomActiveVectorLengthIntrinsic()) {
     // Set Element width to the widest type used in the loop.
     unsigned SmallestType, WidestType;

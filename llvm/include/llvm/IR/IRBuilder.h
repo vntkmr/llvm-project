@@ -2541,12 +2541,6 @@ public:
     return Constant::getAllOnesValue(VTy);
   }
 
-  /// Return an all false boolean vector of size and scalability \p NumElts.
-  Value *CreateFalseVector(ElementCount NumElts) {
-    VectorType *VTy = VectorType::get(Type::getInt1Ty(Context), NumElts);
-    return ConstantAggregateZero::get(VTy);
-  }
-
 private:
   /// Helper function that creates an assume intrinsic call that
   /// represents an alignment assumption on the provided pointer \p PtrValue

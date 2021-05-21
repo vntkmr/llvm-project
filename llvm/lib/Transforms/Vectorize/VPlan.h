@@ -40,6 +40,7 @@
 #include "llvm/ADT/ilist_node.h"
 #include "llvm/Analysis/VectorUtils.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Support/InstructionCost.h"
 #include <algorithm>
 #include <cassert>
@@ -871,11 +872,17 @@ public:
 /// ingredient. This recipe covers most of the traditional vectorization cases
 /// where each ingredient transforms into a vectorized version of itself.
 class VPWidenRecipe : public VPRecipeBase, public VPValue {
+protected:
+  template <typename IterT>
+  VPWidenRecipe(Instruction &I, iterator_range<IterT> Operands,
+                const unsigned char RecipeSC, const unsigned char ValueSC)
+      : VPRecipeBase(RecipeSC, Operands), VPValue(ValueSC, &I, this) {}
+
 public:
   template <typename IterT>
   VPWidenRecipe(Instruction &I, iterator_range<IterT> Operands)
-      : VPRecipeBase(VPRecipeBase::VPWidenSC, Operands),
-        VPValue(VPValue::VPVWidenSC, &I, this) {}
+      : VPWidenRecipe(I, Operands, VPRecipeBase::VPWidenSC,
+                      VPValue::VPVWidenSC) {}
 
   ~VPWidenRecipe() override = default;
 
@@ -901,13 +908,13 @@ public:
 /// using VP intrinsics for its ingredient. This recipe covers most of the
 /// traditional vectorization cases where each ingredient transforms into a
 /// vectorized version of itself.
-class VPPredicatedWidenRecipe : public VPRecipeBase, public VPValue {
+class VPPredicatedWidenRecipe : public VPWidenRecipe {
 public:
   template <typename IterT>
   VPPredicatedWidenRecipe(Instruction &I, iterator_range<IterT> Operands,
                           VPValue *Mask, VPValue *EVL)
-      : VPRecipeBase(VPRecipeBase::VPPredicatedWidenSC, Operands),
-        VPValue(VPValue::VPVPredicatedWidenSC, &I, this) {
+      : VPWidenRecipe(I, Operands, VPRecipeBase::VPPredicatedWidenSC,
+                      VPValue::VPVPredicatedWidenSC) {
     addOperand(Mask);
     addOperand(EVL);
   }
@@ -1423,14 +1430,20 @@ public:
 class VPWidenEVLRecipe : public VPRecipeBase, public VPValue {
 
 public:
-  VPWidenEVLRecipe()
-      : VPRecipeBase(VPRecipeBase::VPWidenEVLSC, {}),
+  VPWidenEVLRecipe(VPValue *IV, VPValue *TC)
+      : VPRecipeBase(VPRecipeBase::VPWidenEVLSC, {IV, TC}),
         VPValue(VPValue::VPVWidenEVLSC, nullptr, this) {}
   ~VPWidenEVLRecipe() override = default;
 
   /// Return the VPValue representing EVL.
   const VPValue *getEVL() const { return this; }
   VPValue *getEVL() { return this; }
+
+  /// Return VPValue representing Induction Variable.
+  VPValue *getIV() const { return getOperand(0); }
+
+  /// Return VPValue representing trip count.
+  VPValue *getTripCount() const { return getOperand(1); }
 
   /// Method to support type inquiry through isa, cast, and dyn_cast.
   static inline bool classof(const VPDef *D) {
@@ -1483,8 +1496,6 @@ public:
 /// TODO: We currently execute only per-part unless a specific instance is
 /// provided.
 class VPWidenMemoryInstructionRecipe : public VPRecipeBase {
-  Instruction &Ingredient;
-
   void setMask(VPValue *Mask) {
     if (!Mask)
       return;
@@ -1495,17 +1506,32 @@ class VPWidenMemoryInstructionRecipe : public VPRecipeBase {
     return isStore() ? getNumOperands() == 3 : getNumOperands() == 2;
   }
 
+protected:
+  Instruction &Ingredient;
+
+  VPWidenMemoryInstructionRecipe(LoadInst &Load, VPValue *Addr,
+                                 const unsigned char RecipeSC,
+                                 const unsigned char ValueSC)
+      : VPRecipeBase(RecipeSC, {Addr}), Ingredient(Load) {
+    new VPValue(ValueSC, &Load, this);
+  }
+
+  VPWidenMemoryInstructionRecipe(StoreInst &Store, VPValue *Addr,
+                                 VPValue *StoredValue,
+                                 const unsigned char RecipeSC)
+      : VPRecipeBase(RecipeSC, {Addr, StoredValue}), Ingredient(Store) {}
+
 public:
   VPWidenMemoryInstructionRecipe(LoadInst &Load, VPValue *Addr, VPValue *Mask)
-      : VPRecipeBase(VPWidenMemoryInstructionSC, {Addr}), Ingredient(Load) {
-    new VPValue(VPValue::VPVMemoryInstructionSC, &Load, this);
+      : VPWidenMemoryInstructionRecipe(Load, Addr, VPWidenMemoryInstructionSC,
+                                       VPValue::VPVMemoryInstructionSC) {
     setMask(Mask);
   }
 
   VPWidenMemoryInstructionRecipe(StoreInst &Store, VPValue *Addr,
                                  VPValue *StoredValue, VPValue *Mask)
-      : VPRecipeBase(VPWidenMemoryInstructionSC, {Addr, StoredValue}),
-        Ingredient(Store) {
+      : VPWidenMemoryInstructionRecipe(Store, Addr, StoredValue,
+                                       VPWidenMemoryInstructionSC) {
     setMask(Mask);
   }
 
@@ -1549,33 +1575,32 @@ public:
 /// The recipe uses the following VPValues:
 /// - For load: Address, mask, EVL
 /// - For store: Address, stored value, mask, EVL
-class VPPredicatedWidenMemoryInstructionRecipe : public VPRecipeBase {
-  Instruction &Ingredient;
+class VPPredicatedWidenMemoryInstructionRecipe
+    : public VPWidenMemoryInstructionRecipe {
 
 public:
   VPPredicatedWidenMemoryInstructionRecipe(LoadInst &Load, VPValue *Addr,
                                            VPValue *Mask, VPValue *EVL)
-      : VPRecipeBase(VPPredicatedWidenMemoryInstructionSC, {Addr, Mask, EVL}),
-        Ingredient(Load) {
-    new VPValue(VPValue::VPVPredicatedMemoryInstructionSC, &Load, this);
+      : VPWidenMemoryInstructionRecipe(
+            Load, Addr, VPPredicatedWidenMemoryInstructionSC,
+            VPValue::VPVPredicatedMemoryInstructionSC) {
+    addOperand(Mask);
+    addOperand(EVL);
   }
 
   VPPredicatedWidenMemoryInstructionRecipe(StoreInst &Store, VPValue *Addr,
                                            VPValue *StoredValue, VPValue *Mask,
                                            VPValue *EVL)
-      : VPRecipeBase(VPPredicatedWidenMemoryInstructionSC,
-                     {Addr, StoredValue, Mask, EVL}),
-        Ingredient(Store) {}
+      : VPWidenMemoryInstructionRecipe(Store, Addr, StoredValue,
+                                       VPPredicatedWidenMemoryInstructionSC) {
+    addOperand(Mask);
+    addOperand(EVL);
+  }
 
   /// Method to support type inquiry through isa, cast, and dyn_cast.
   static inline bool classof(const VPDef *D) {
     return D->getVPDefID() ==
            VPRecipeBase::VPPredicatedWidenMemoryInstructionSC;
-  }
-
-  /// Return the address accessed by this recipe.
-  VPValue *getAddr() const {
-    return getOperand(0); // Address is the 1st, mandatory operand.
   }
 
   /// Return the mask used by this recipe.
@@ -1588,15 +1613,6 @@ public:
   VPValue *getEVL() const {
     // EVL is the last, mandatory operand.
     return getOperand(getNumOperands() - 1);
-  }
-
-  /// Returns true if this recipe is a store.
-  bool isStore() const { return isa<StoreInst>(Ingredient); }
-
-  /// Return the address accessed by this recipe.
-  VPValue *getStoredValue() const {
-    assert(isStore() && "Stored value only available for store instructions");
-    return getOperand(1); // Stored value is the 2nd, mandatory operand.
   }
 
   /// Generate the wide load/store.
@@ -2124,6 +2140,16 @@ class VPlan {
   /// the tail.
   VPValue *BackedgeTakenCount = nullptr;
 
+  /// Represents the trip count of the original loop, for computing EVL.
+  VPValue *TripCount = nullptr;
+
+  /// Represents the runtime VF. Some recipes like Vector Predicated recipes may
+  /// use runtime VF as an operand. At the time of plan construction while it is
+  /// known that this value is a loop invariant, but the corresponding IR value
+  /// is only available at plan execution once the final VF and corresponding
+  /// plan are chosen.
+  VPValue *RuntimeVF = nullptr;
+
   /// Holds a mapping between Values and their corresponding VPValue inside
   /// VPlan.
   Value2VPValueTy Value2VPValue;
@@ -2153,6 +2179,10 @@ public:
       delete VPV;
     if (BackedgeTakenCount)
       delete BackedgeTakenCount;
+    if (TripCount)
+      delete TripCount;
+    if (RuntimeVF)
+      delete RuntimeVF;
     for (VPValue *Def : VPExternalDefs)
       delete Def;
   }
@@ -2174,6 +2204,21 @@ public:
     if (!BackedgeTakenCount)
       BackedgeTakenCount = new VPValue();
     return BackedgeTakenCount;
+  }
+
+  /// The trip count of the original loop.
+  VPValue *getOrCreateTripCount() {
+    if (!TripCount)
+      TripCount = new VPValue();
+    return TripCount;
+  }
+
+  /// A VPValue representing the loop invariant runtime VF to be expanded at
+  /// paln execution.
+  VPValue *getOrCreateRuntimeVF() {
+    if (!RuntimeVF)
+      RuntimeVF = new VPValue();
+    return RuntimeVF;
   }
 
   void addVF(ElementCount VF) { VFs.insert(VF); }

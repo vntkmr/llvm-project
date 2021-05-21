@@ -162,22 +162,22 @@ define dso_local void @foo(i32* noalias nocapture %a, i32* noalias nocapture rea
 ; FORCE-AVL-NEXT:    [[BROADCAST_SPLAT:%.*]] = shufflevector <4 x i64> [[BROADCAST_SPLATINSERT]], <4 x i64> poison, <4 x i32> zeroinitializer
 ; FORCE-AVL-NEXT:    [[INDUCTION:%.*]] = add <4 x i64> [[BROADCAST_SPLAT]], <i64 0, i64 1, i64 2, i64 3>
 ; FORCE-AVL-NEXT:    [[TMP0:%.*]] = add i64 [[INDEX]], 0
-; FORCE-AVL-NEXT:    [[TMP1:%.*]] = getelementptr inbounds i32, i32* [[B:%.*]], i64 [[TMP0]]
-; FORCE-AVL-NEXT:    [[TMP2:%.*]] = sub i64 [[WIDE_TRIP_COUNT]], [[INDEX]]
-; FORCE-AVL-NEXT:    [[TMP3:%.*]] = call i64 @llvm.umin.i64(i64 4, i64 [[TMP2]])
-; FORCE-AVL-NEXT:    [[TMP4:%.*]] = trunc i64 [[TMP3]] to i32
-; FORCE-AVL-NEXT:    [[TMP5:%.*]] = getelementptr inbounds i32, i32* [[TMP1]], i32 0
+; FORCE-AVL-NEXT:    [[TMP1:%.*]] = sub i64 [[WIDE_TRIP_COUNT]], [[TMP0]]
+; FORCE-AVL-NEXT:    [[TMP2:%.*]] = call i64 @llvm.umin.i64(i64 4, i64 [[TMP1]])
+; FORCE-AVL-NEXT:    [[TMP3:%.*]] = trunc i64 [[TMP2]] to i32
+; FORCE-AVL-NEXT:    [[TMP4:%.*]] = getelementptr inbounds i32, i32* [[B:%.*]], i64 [[TMP0]]
+; FORCE-AVL-NEXT:    [[TMP5:%.*]] = getelementptr inbounds i32, i32* [[TMP4]], i32 0
 ; FORCE-AVL-NEXT:    [[TMP6:%.*]] = bitcast i32* [[TMP5]] to <4 x i32>*
-; FORCE-AVL-NEXT:    [[VP_OP_LOAD:%.*]] = call <4 x i32> @llvm.vp.load.v4i32.p0v4i32(<4 x i32>* [[TMP6]], i32 4, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 [[TMP4]])
+; FORCE-AVL-NEXT:    [[VP_OP_LOAD:%.*]] = call <4 x i32> @llvm.vp.load.v4i32.p0v4i32(<4 x i32>* [[TMP6]], i32 4, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 [[TMP3]])
 ; FORCE-AVL-NEXT:    [[TMP7:%.*]] = getelementptr inbounds i32, i32* [[C:%.*]], i64 [[TMP0]]
 ; FORCE-AVL-NEXT:    [[TMP8:%.*]] = getelementptr inbounds i32, i32* [[TMP7]], i32 0
 ; FORCE-AVL-NEXT:    [[TMP9:%.*]] = bitcast i32* [[TMP8]] to <4 x i32>*
-; FORCE-AVL-NEXT:    [[VP_OP_LOAD1:%.*]] = call <4 x i32> @llvm.vp.load.v4i32.p0v4i32(<4 x i32>* [[TMP9]], i32 4, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 [[TMP4]])
-; FORCE-AVL-NEXT:    [[VP_OP:%.*]] = call <4 x i32> @llvm.vp.add.v4i32(<4 x i32> [[VP_OP_LOAD1]], <4 x i32> [[VP_OP_LOAD]], <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 [[TMP4]])
+; FORCE-AVL-NEXT:    [[VP_OP_LOAD1:%.*]] = call <4 x i32> @llvm.vp.load.v4i32.p0v4i32(<4 x i32>* [[TMP9]], i32 4, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 [[TMP3]])
+; FORCE-AVL-NEXT:    [[VP_OP:%.*]] = call <4 x i32> @llvm.vp.add.v4i32(<4 x i32> [[VP_OP_LOAD1]], <4 x i32> [[VP_OP_LOAD]], <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 [[TMP3]])
 ; FORCE-AVL-NEXT:    [[TMP10:%.*]] = getelementptr inbounds i32, i32* [[A:%.*]], i64 [[TMP0]]
 ; FORCE-AVL-NEXT:    [[TMP11:%.*]] = getelementptr inbounds i32, i32* [[TMP10]], i32 0
 ; FORCE-AVL-NEXT:    [[TMP12:%.*]] = bitcast i32* [[TMP11]] to <4 x i32>*
-; FORCE-AVL-NEXT:    call void @llvm.vp.store.v4i32.p0v4i32(<4 x i32> [[VP_OP]], <4 x i32>* [[TMP12]], i32 4, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 [[TMP4]])
+; FORCE-AVL-NEXT:    call void @llvm.vp.store.v4i32.p0v4i32(<4 x i32> [[VP_OP]], <4 x i32>* [[TMP12]], i32 4, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, i32 [[TMP3]])
 ; FORCE-AVL-NEXT:    [[INDEX_NEXT]] = add i64 [[INDEX]], 4
 ; FORCE-AVL-NEXT:    [[TMP13:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
 ; FORCE-AVL-NEXT:    br i1 [[TMP13]], label [[MIDDLE_BLOCK:%.*]], label [[VECTOR_BODY]], !llvm.loop [[LOOP0:![0-9]+]]

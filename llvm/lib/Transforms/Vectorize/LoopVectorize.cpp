@@ -60,6 +60,7 @@
 #include "VPlanHCFGBuilder.h"
 #include "VPlanPredicator.h"
 #include "VPlanTransforms.h"
+#include "VPlanValue.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -621,7 +622,7 @@ public:
 
   /// Create Instructions to compute Explicit Vector Length when using VP
   /// intrinsics.
-  Value *createEVL();
+  Value *createEVL(VPValue *IV, VPValue *TC, VPTransformState &State);
 
 protected:
   friend class LoopVectorizationPlanner;
@@ -8778,6 +8779,22 @@ VPValue *VPRecipeBuilder::createEdgeMask(BasicBlock *Src, BasicBlock *Dst,
   return EdgeMaskCache[Edge] = EdgeMask;
 }
 
+VPValue *VPRecipeBuilder::getOrCreateIV(VPBasicBlock *VPBB, VPlanPtr &Plan) {
+  IVCacheTy::iterator IVEntryIt = IVCache.find(VPBB);
+  if (IVEntryIt != IVCache.end())
+    return IVEntryIt->second;
+
+  VPValue *IV = nullptr;
+  if (Legal->getPrimaryInduction())
+    IV = Plan->getOrAddVPValue(Legal->getPrimaryInduction());
+  else {
+    auto *IVRecipe = new VPWidenCanonicalIVRecipe();
+    Builder.getInsertBlock()->insert(IVRecipe, Builder.getInsertPoint());
+    IV = IVRecipe->getVPSingleValue();
+  }
+  return IVCache[VPBB] = IV;
+}
+
 VPValue *VPRecipeBuilder::createBlockInMask(BasicBlock *BB, VPlanPtr &Plan) {
   assert(OrigLoop->contains(BB) && "Block is not a part of a loop");
 
@@ -8815,14 +8832,7 @@ VPValue *VPRecipeBuilder::createBlockInMask(BasicBlock *BB, VPlanPtr &Plan) {
     // Introduce the early-exit compare IV <= BTC to form header block mask.
     // This is used instead of IV < TC because TC may wrap, unlike BTC.
     // Start by constructing the desired canonical IV.
-    VPValue *IV = nullptr;
-    if (Legal->getPrimaryInduction())
-      IV = Plan->getOrAddVPValue(Legal->getPrimaryInduction());
-    else {
-      auto IVRecipe = new VPWidenCanonicalIVRecipe();
-      Builder.getInsertBlock()->insert(IVRecipe, NewInsertionPoint);
-      IV = IVRecipe->getVPSingleValue();
-    }
+    VPValue *IV = getOrCreateIV(Builder.getInsertBlock(), Plan);
     VPValue *BTC = Plan->getOrCreateBackedgeTakenCount();
     bool TailFolded = !CM.isScalarEpilogueAllowed();
 
@@ -8855,12 +8865,26 @@ VPValue *VPRecipeBuilder::createBlockInMask(BasicBlock *BB, VPlanPtr &Plan) {
   return BlockMaskCache[BB] = BlockMask;
 }
 
-VPValue *VPRecipeBuilder::getOrCreateEVL() {
-  if (!EVL) {
-    auto *EVLRecipe = new VPWidenEVLRecipe();
-    Builder.getInsertBlock()->appendRecipe(EVLRecipe);
-    EVL = EVLRecipe->getEVL();
+VPValue *VPRecipeBuilder::getOrCreateEVL(VPlanPtr &Plan) {
+  if (EVL)
+    return EVL;
+
+  if (PreferPredicateWithVPIntrinsics ==
+      PreferVPIntrinsicsTy::WithoutAVLSupport) {
+    EVL = Plan->getOrCreateRuntimeVF();
+    return EVL;
   }
+
+  VPBuilder::InsertPointGuard Guard(Builder);
+  auto *HeaderBB = Plan->getEntry()->getSingleSuccessor()->getEntryBasicBlock();
+  auto NewInsertionPoint = HeaderBB->getFirstNonPhi();
+  Builder.setInsertPoint(HeaderBB, NewInsertionPoint);
+
+  VPValue *IV = getOrCreateIV(Builder.getInsertBlock(), Plan);
+  VPValue *TC = Plan->getOrCreateTripCount();
+  auto *EVLRecipe = new VPWidenEVLRecipe(IV, TC);
+  Builder.getInsertBlock()->insert(EVLRecipe, Builder.getInsertPoint());
+  EVL = EVLRecipe->getEVL();
   return EVL;
 }
 
@@ -8914,7 +8938,7 @@ VPRecipeBuilder::tryToPredicatedWidenMemory(Instruction *I,
     return nullptr;
 
   VPValue *Mask = createBlockInMask(I->getParent(), Plan);
-  VPValue *EVL = getOrCreateEVL();
+  VPValue *EVL = getOrCreateEVL(Plan);
   if (LoadInst *Load = dyn_cast<LoadInst>(I))
     return new VPPredicatedWidenMemoryInstructionRecipe(*Load, Operands[0],
                                                         Mask, EVL);
@@ -9130,7 +9154,7 @@ VPPredicatedWidenRecipe *VPRecipeBuilder::tryToPredicatedWiden(
     return nullptr;
 
   VPValue *Mask = createBlockInMask(I->getParent(), Plan);
-  VPValue *EVL = getOrCreateEVL();
+  VPValue *EVL = getOrCreateEVL(Plan);
   return new VPPredicatedWidenRecipe(
       *I, make_range(Operands.begin(), Operands.end()), Mask, EVL);
 }
@@ -9939,7 +9963,8 @@ void VPPredicatedWidenMemoryInstructionRecipe::execute(
       StoredValue, getMask(), getEVL());
 }
 
-Value *InnerLoopVectorizer::createEVL() {
+Value *InnerLoopVectorizer::createEVL(VPValue *IV, VPValue *TC,
+                                      VPTransformState &State) {
   assert(PreferPredicateWithVPIntrinsics !=
              PreferVPIntrinsicsTy::NoPredication &&
          "Predication with VP intrinsics turned off.");
@@ -9952,11 +9977,9 @@ Value *InnerLoopVectorizer::createEVL() {
   Value *RuntimeVL =
       VF.isScalable() ? Builder.CreateVScale(MinVF, "vscale.x.vf") : MinVF;
 
-  if (PreferPredicateWithVPIntrinsics ==
-          PreferVPIntrinsicsTy::WithoutAVLSupport &&
-      !TTI->hasActiveVectorLength()) {
-    return RuntimeVL;
-  }
+  // TODO: Add support for interleaving.
+  auto *TripCount = State.get(TC, 0);
+  auto *Induction = State.get(IV, VPIteration(0, 0));
 
   Value *Remaining = Builder.CreateSub(TripCount, Induction);
   // FIXME: This is a proof-of-concept naive implementation to demonstrate using
@@ -9985,7 +10008,8 @@ void VPWidenEVLRecipe::execute(VPTransformState &State) {
   // the per Part set method to store the same EVL for each Part (State.UF would
   // be 1 for now.)
   for (unsigned Part = 0; Part < State.UF; Part++)
-    State.set(getEVL(), State.ILV->createEVL(), Part);
+    State.set(getEVL(), State.ILV->createEVL(getIV(), getTripCount(), State),
+              Part);
 }
 
 // Determine how to lower the scalar epilogue, which depends on 1) optimising

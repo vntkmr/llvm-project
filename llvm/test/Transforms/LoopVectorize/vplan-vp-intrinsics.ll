@@ -28,15 +28,14 @@ define dso_local void @foo(i32* noalias nocapture %a, i32* noalias nocapture rea
 ; WITHOUT-AVL: VPlan 'Initial VPlan for VF={4},UF>=1' {
 ; WITHOUT-AVL-NEXT: for.body:
 ; WITHOUT-AVL-NEXT:   WIDEN-INDUCTION %indvars.iv = phi 0, %indvars.iv.next
-; WITHOUT-AVL-NEXT:   EMIT vp<%2> = icmp ule ir<%indvars.iv> vp<%0>
+; WITHOUT-AVL-NEXT:   EMIT vp<%3> = icmp ule ir<%indvars.iv> vp<%0>
 ; WITHOUT-AVL-NEXT:   CLONE ir<%arrayidx> = getelementptr ir<%b>, ir<%indvars.iv>
-; WITHOUT-AVL-NEXT:   EMIT vp<%4> = GENERATE-EXPLICIT-VECTOR-LENGTH
-; WITHOUT-AVL-NEXT:   PREDICATED-WIDEN ir<%0> = load ir<%arrayidx>, vp<%2>, vp<%4>
+; WITHOUT-AVL-NEXT:   PREDICATED-WIDEN ir<%0> = load ir<%arrayidx>, vp<%3>, vp<%1>
 ; WITHOUT-AVL-NEXT:   CLONE ir<%arrayidx2> = getelementptr ir<%c>, ir<%indvars.iv>
-; WITHOUT-AVL-NEXT:   PREDICATED-WIDEN ir<%1> = load ir<%arrayidx2>, vp<%2>, vp<%4>
-; WITHOUT-AVL-NEXT:   PREDICATED-WIDEN ir<%add> = add ir<%1>, ir<%0>, vp<%2>, vp<%4>
+; WITHOUT-AVL-NEXT:   PREDICATED-WIDEN ir<%1> = load ir<%arrayidx2>, vp<%3>, vp<%1>
+; WITHOUT-AVL-NEXT:   PREDICATED-WIDEN ir<%add> = add ir<%1>, ir<%0>, vp<%3>, vp<%1>
 ; WITHOUT-AVL-NEXT:   CLONE ir<%arrayidx4> = getelementptr ir<%a>, ir<%indvars.iv>
-; WITHOUT-AVL-NEXT:   PREDICATED-WIDEN store ir<%arrayidx4>, ir<%add>, vp<%2>, vp<%4>
+; WITHOUT-AVL-NEXT:   PREDICATED-WIDEN store ir<%arrayidx4>, ir<%add>, vp<%3>, vp<%1>
 ; WITHOUT-AVL-NEXT: No successors
 ; WITHOUT-AVL-NEXT: }
 
@@ -57,15 +56,15 @@ define dso_local void @foo(i32* noalias nocapture %a, i32* noalias nocapture rea
 ; FORCE-AVL: VPlan 'Initial VPlan for VF={4},UF>=1' {
 ; FORCE-AVL-NEXT: for.body:
 ; FORCE-AVL-NEXT:   WIDEN-INDUCTION %indvars.iv = phi 0, %indvars.iv.next
+; FORCE-AVL-NEXT:   EMIT vp<%2> = GENERATE-EXPLICIT-VECTOR-LENGTH
 ; FORCE-AVL-NEXT:   CLONE ir<%arrayidx> = getelementptr ir<%b>, ir<%indvars.iv>
-; FORCE-AVL-NEXT:   EMIT vp<%2> = all true mask
-; FORCE-AVL-NEXT:   EMIT vp<%3> = GENERATE-EXPLICIT-VECTOR-LENGTH
-; FORCE-AVL-NEXT:   PREDICATED-WIDEN ir<%0> = load ir<%arrayidx>, vp<%2>, vp<%3>
+; FORCE-AVL-NEXT:   EMIT vp<%4> = all true mask
+; FORCE-AVL-NEXT:   PREDICATED-WIDEN ir<%0> = load ir<%arrayidx>, vp<%4>, vp<%2>
 ; FORCE-AVL-NEXT:   CLONE ir<%arrayidx2> = getelementptr ir<%c>, ir<%indvars.iv>
-; FORCE-AVL-NEXT:   PREDICATED-WIDEN ir<%1> = load ir<%arrayidx2>, vp<%2>, vp<%3>
-; FORCE-AVL-NEXT:   PREDICATED-WIDEN ir<%add> = add ir<%1>, ir<%0>, vp<%2>, vp<%3>
+; FORCE-AVL-NEXT:   PREDICATED-WIDEN ir<%1> = load ir<%arrayidx2>, vp<%4>, vp<%2>
+; FORCE-AVL-NEXT:   PREDICATED-WIDEN ir<%add> = add ir<%1>, ir<%0>, vp<%4>, vp<%2>
 ; FORCE-AVL-NEXT:   CLONE ir<%arrayidx4> = getelementptr ir<%a>, ir<%indvars.iv>
-; FORCE-AVL-NEXT:   PREDICATED-WIDEN store ir<%arrayidx4>, ir<%add>, vp<%2>, vp<%3>
+; FORCE-AVL-NEXT:   PREDICATED-WIDEN store ir<%arrayidx4>, ir<%add>, vp<%4>, vp<%2>
 ; FORCE-AVL-NEXT: No successors
 ; FORCE-AVL-NEXT: }
 

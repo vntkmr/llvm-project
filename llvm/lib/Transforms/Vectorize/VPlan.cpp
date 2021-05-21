@@ -754,10 +754,26 @@ void VPInstruction::print(raw_ostream &O, const Twine &Indent,
 /// LoopVectorBody basic-block was created for this. Introduce additional
 /// basic-blocks as needed, and fill them all.
 void VPlan::execute(VPTransformState *State) {
+  IRBuilder<> Builder(State->CFG.PrevBB->getTerminator());
+
+  // -3 Check if the trip count is needed, if so build it.
+  if (TripCount && TripCount->getNumUsers()) {
+    Value *TC = State->TripCount;
+    for (unsigned Part = 0, UF = State->UF; Part < UF; ++Part)
+      State->set(TripCount, TC, Part);
+  }
+
+  // -2 Set the runtime VF if it is needed.
+  if (RuntimeVF && RuntimeVF->getNumUsers()) {
+    Value *RuntimeVFVal =
+        getRuntimeVF(Builder, Builder.getInt32Ty(), State->VF);
+    for (unsigned Part = 0, UF = State->UF; Part < UF; ++Part)
+      State->set(RuntimeVF, RuntimeVFVal, Part);
+  }
+
   // -1. Check if the backedge taken count is needed, and if so build it.
   if (BackedgeTakenCount && BackedgeTakenCount->getNumUsers()) {
     Value *TC = State->TripCount;
-    IRBuilder<> Builder(State->CFG.PrevBB->getTerminator());
     auto *TCMO = Builder.CreateSub(TC, ConstantInt::get(TC->getType(), 1),
                                    "trip.count.minus.1");
     auto VF = State->VF;
@@ -925,6 +941,16 @@ void VPlanPrinter::dump() {
     OS << ", where:\\n";
     Plan.BackedgeTakenCount->print(OS, SlotTracker);
     OS << " := BackedgeTakenCount";
+  }
+  if (Plan.TripCount) {
+    OS << "\\n";
+    Plan.RuntimeVF->print(OS, SlotTracker);
+    OS << " := TripCount";
+  }
+  if (Plan.RuntimeVF) {
+    OS << "\\n";
+    Plan.RuntimeVF->print(OS, SlotTracker);
+    OS << " := RuntimeVF";
   }
   OS << "\"]\n";
   OS << "node [shape=rect, fontname=Courier, fontsize=30]\n";
@@ -1358,6 +1384,12 @@ void VPSlotTracker::assignSlots(const VPlan &Plan) {
 
   if (Plan.BackedgeTakenCount)
     assignSlot(Plan.BackedgeTakenCount);
+
+  if (Plan.TripCount)
+    assignSlot(Plan.TripCount);
+
+  if (Plan.RuntimeVF)
+    assignSlot(Plan.RuntimeVF);
 
   ReversePostOrderTraversal<
       VPBlockRecursiveTraversalWrapper<const VPBlockBase *>>

@@ -11,6 +11,7 @@
 
 #include "LoopVectorizationPlanner.h"
 #include "VPlan.h"
+#include "VPlanValue.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/IR/IRBuilder.h"
@@ -52,6 +53,11 @@ class VPRecipeBuilder {
   using BlockMaskCacheTy = DenseMap<BasicBlock *, VPValue *>;
   EdgeMaskCacheTy EdgeMaskCache;
   BlockMaskCacheTy BlockMaskCache;
+
+  /// Hold a mapping of Basic block to the canonical vector induction VPValue
+  /// inserted for that block or the primary induction if it exists.
+  using IVCacheTy = DenseMap<VPBasicBlock *, VPValue *>;
+  IVCacheTy IVCache;
 
   // VPlan-VPlan transformations support: Hold a mapping from ingredients to
   // their recipe. To save on memory, only do so for selected ingredients,
@@ -127,6 +133,9 @@ class VPRecipeBuilder {
   /// Create recipes that will expand to VP intrinsics.
   bool preferPredicatedWiden() const;
 
+  /// Insert and Cache Induction Variable
+  VPValue *getOrCreateIV(VPBasicBlock *VPBB, VPlanPtr &Plan);
+
 public:
   VPRecipeBuilder(Loop *OrigLoop, const TargetLibraryInfo *TLI,
                   LoopVectorizationLegality *Legal,
@@ -164,7 +173,7 @@ public:
 
   /// A helper function that computes the Explicit(Active) Vector Length for the
   /// current vector iteration.
-  VPValue *getOrCreateEVL();
+  VPValue *getOrCreateEVL(VPlanPtr &Plan);
 
   /// Mark given ingredient for recording its recipe once one is created for
   /// it.

@@ -55,6 +55,9 @@ protected:
     Str << " declare <8 x i32> @llvm.vp.gather.v8i32.v8p0i32(<8 x i32*>, <8 x "
            "i1>, i32) ";
 
+    Str << " declare <8 x i32> @llvm.experimental.vp.splice.v8i32(<8 x "
+           "i32>, <8 x i32>, i32, <8 x i1>, i32, i32) ";
+
     return parseAssemblyString(Str.str(), Err, C);
   }
 };

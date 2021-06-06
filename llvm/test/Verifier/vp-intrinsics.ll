@@ -29,6 +29,16 @@ define void @test_vp_fp(<8 x double> %f0, <8 x double> %f1, <8 x i1> %m, i32 %n)
 
 ; TODO: test_vp_constrained_fp
 
+define void @test_vp_splice0(<8 x i32> %i0, <8 x i32> %i1, <8 x i1> %m, i32 %l0, i32 %l1) {
+  %r0 = call <8 x i32> @llvm.experimental.vp.splice.v8i32(<8 x i32> %i0, <8 x i32> %i1, i32 2, <8 x i1> %m, i32 %l0, i32 %l1)
+  ret void
+}
+
+define void @test_vp_splice1(<vscale x 8 x i32> %i0, <vscale x 8 x i32> %i1, <vscale x 8 x i1> %m, i32 %l0, i32 %l1) {
+  %r0 = call <vscale x 8 x i32> @llvm.experimental.vp.splice.nxv8i32(<vscale x 8 x i32> %i0, <vscale x 8 x i32> %i1, i32 -1, <vscale x 8 x i1> %m, i32 %l0, i32 %l1)
+  ret void
+}
+
 ; integer arith
 declare <8 x i32> @llvm.vp.add.v8i32(<8 x i32>, <8 x i32>, <8 x i1>, i32)
 declare <8 x i32> @llvm.vp.sub.v8i32(<8 x i32>, <8 x i32>, <8 x i1>, i32)
@@ -50,3 +60,6 @@ declare <8 x double> @llvm.vp.fsub.v8f64(<8 x double>, <8 x double>, <8 x i1>, i
 declare <8 x double> @llvm.vp.fmul.v8f64(<8 x double>, <8 x double>, <8 x i1>, i32)
 declare <8 x double> @llvm.vp.fdiv.v8f64(<8 x double>, <8 x double>, <8 x i1>, i32)
 declare <8 x double> @llvm.vp.frem.v8f64(<8 x double>, <8 x double>, <8 x i1>, i32)
+; shuffles
+declare <8 x i32> @llvm.experimental.vp.splice.v8i32(<8 x i32>, <8 x i32>, i32, <8 x i1>, i32, i32)
+declare <vscale x 8 x i32> @llvm.experimental.vp.splice.nxv8i32(<vscale x 8 x i32>, <vscale x 8 x i32>, i32, <vscale x 8 x i1>, i32, i32)

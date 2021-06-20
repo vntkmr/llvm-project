@@ -51,6 +51,7 @@ class VPValue {
   friend class VPSlotTracker;
   friend class VPRecipeBase;
   friend class VPWidenMemoryInstructionRecipe;
+  friend class VPPredicatedWidenMemoryInstructionRecipe;
 
   const unsigned char SubclassID; ///< Subclass identifier (for isa/dyn_cast).
 
@@ -92,10 +93,13 @@ public:
     VPValueSC,
     VPVInstructionSC,
     VPVMemoryInstructionSC,
+    VPVPredicatedMemoryInstructionSC,
+    VPVPredicatedWidenSC,
     VPVReductionSC,
     VPVReplicateSC,
     VPVWidenSC,
     VPVWidenCallSC,
+    VPVWidenEVLSC,
     VPVWidenGEPSC,
     VPVWidenSelectSC,
 
@@ -321,9 +325,12 @@ public:
     VPBranchOnMaskSC,
     VPInstructionSC,
     VPInterleaveSC,
+    VPPredicatedWidenMemoryInstructionSC,
+    VPPredicatedWidenSC,
     VPReductionSC,
     VPReplicateSC,
     VPWidenCallSC,
+    VPWidenEVLSC,
     VPWidenGEPSC,
     VPWidenMemoryInstructionSC,
     VPWidenSC,

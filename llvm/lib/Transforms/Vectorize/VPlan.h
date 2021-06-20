@@ -754,6 +754,7 @@ public:
 
 inline bool VPUser::classof(const VPDef *Def) {
   return Def->getVPDefID() == VPRecipeBase::VPInstructionSC ||
+         Def->getVPDefID() == VPRecipeBase::VPPredicatedWidenSC ||
          Def->getVPDefID() == VPRecipeBase::VPWidenSC ||
          Def->getVPDefID() == VPRecipeBase::VPWidenCallSC ||
          Def->getVPDefID() == VPRecipeBase::VPWidenSelectSC ||
@@ -763,6 +764,8 @@ inline bool VPUser::classof(const VPDef *Def) {
          Def->getVPDefID() == VPRecipeBase::VPReplicateSC ||
          Def->getVPDefID() == VPRecipeBase::VPReductionSC ||
          Def->getVPDefID() == VPRecipeBase::VPBranchOnMaskSC ||
+         Def->getVPDefID() ==
+             VPRecipeBase::VPPredicatedWidenMemoryInstructionSC ||
          Def->getVPDefID() == VPRecipeBase::VPWidenMemoryInstructionSC;
 }
 
@@ -781,6 +784,7 @@ public:
     SLPLoad,
     SLPStore,
     ActiveLaneMask,
+    AllTrueMask,
   };
 
 private:
@@ -873,11 +877,17 @@ public:
 /// ingredient. This recipe covers most of the traditional vectorization cases
 /// where each ingredient transforms into a vectorized version of itself.
 class VPWidenRecipe : public VPRecipeBase, public VPValue {
+protected:
+  template <typename IterT>
+  VPWidenRecipe(Instruction &I, iterator_range<IterT> Operands,
+                const unsigned char RecipeSC, const unsigned char ValueSC)
+      : VPRecipeBase(RecipeSC, Operands), VPValue(ValueSC, &I, this) {}
+
 public:
   template <typename IterT>
   VPWidenRecipe(Instruction &I, iterator_range<IterT> Operands)
-      : VPRecipeBase(VPRecipeBase::VPWidenSC, Operands),
-        VPValue(VPValue::VPVWidenSC, &I, this) {}
+      : VPWidenRecipe(I, Operands, VPRecipeBase::VPWidenSC,
+                      VPValue::VPVWidenSC) {}
 
   ~VPWidenRecipe() override = default;
 
@@ -890,6 +900,47 @@ public:
   }
 
   /// Produce widened copies of all Ingredients.
+  void execute(VPTransformState &State) override;
+
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+  /// Print the recipe.
+  void print(raw_ostream &O, const Twine &Indent,
+             VPSlotTracker &SlotTracker) const override;
+#endif
+};
+
+/// VPPredicatedWidenRecipe is a recipe for producing a copy of vector type
+/// using VP intrinsics for its ingredient. This recipe covers most of the
+/// traditional vectorization cases where each ingredient transforms into a
+/// vectorized version of itself.
+class VPPredicatedWidenRecipe : public VPWidenRecipe {
+public:
+  template <typename IterT>
+  VPPredicatedWidenRecipe(Instruction &I, iterator_range<IterT> Operands,
+                          VPValue *Mask, VPValue *EVL)
+      : VPWidenRecipe(I, Operands, VPRecipeBase::VPPredicatedWidenSC,
+                      VPValue::VPVPredicatedWidenSC) {
+    addOperand(Mask);
+    addOperand(EVL);
+  }
+
+  ~VPPredicatedWidenRecipe() override = default;
+
+  /// Method to support type inquiry through isa, cast, and dyn_cast.
+  static inline bool classof(const VPDef *D) {
+    return D->getVPDefID() == VPRecipeBase::VPPredicatedWidenSC;
+  }
+  static inline bool classof(const VPValue *V) {
+    return V->getVPValueID() == VPValue::VPVPredicatedWidenSC;
+  }
+
+  /// Return the mask used by this recipe.
+  VPValue *getMask() const { return getOperand(getNumOperands() - 2); }
+
+  /// Return the explicit vector length used by this recipe.
+  VPValue *getEVL() const { return getOperand(getNumOperands() - 1); }
+
+  /// Generate the wide load/store.
   void execute(VPTransformState &State) override;
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
@@ -1428,6 +1479,41 @@ public:
   }
 };
 
+/// A recipe to generate Explicit Vector Length (EVL) value to be used with
+/// VPred intrinsics.
+class VPWidenEVLRecipe : public VPRecipeBase, public VPValue {
+
+public:
+  VPWidenEVLRecipe(VPValue *IV, VPValue *TC)
+      : VPRecipeBase(VPRecipeBase::VPWidenEVLSC, {IV, TC}),
+        VPValue(VPValue::VPVWidenEVLSC, nullptr, this) {}
+  ~VPWidenEVLRecipe() override = default;
+
+  /// Return the VPValue representing EVL.
+  const VPValue *getEVL() const { return this; }
+  VPValue *getEVL() { return this; }
+
+  /// Return VPValue representing Induction Variable.
+  VPValue *getIV() const { return getOperand(0); }
+
+  /// Return VPValue representing trip count.
+  VPValue *getTripCount() const { return getOperand(1); }
+
+  /// Method to support type inquiry through isa, cast, and dyn_cast.
+  static inline bool classof(const VPDef *D) {
+    return D->getVPDefID() == VPRecipeBase::VPWidenEVLSC;
+  }
+
+  /// Generate the instructions to compute EVL.
+  void execute(VPTransformState &State) override;
+
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+  /// Print the recipe.
+  void print(raw_ostream &O, const Twine &Indent,
+             VPSlotTracker &SlotTracker) const override;
+#endif
+};
+
 /// VPPredInstPHIRecipe is a recipe for generating the phi nodes needed when
 /// control converges back from a Branch-on-Mask. The phi nodes are needed in
 /// order to merge values that are set under such a branch and feed their uses.
@@ -1464,8 +1550,6 @@ public:
 /// TODO: We currently execute only per-part unless a specific instance is
 /// provided.
 class VPWidenMemoryInstructionRecipe : public VPRecipeBase {
-  Instruction &Ingredient;
-
   void setMask(VPValue *Mask) {
     if (!Mask)
       return;
@@ -1476,17 +1560,32 @@ class VPWidenMemoryInstructionRecipe : public VPRecipeBase {
     return isStore() ? getNumOperands() == 3 : getNumOperands() == 2;
   }
 
+protected:
+  Instruction &Ingredient;
+
+  VPWidenMemoryInstructionRecipe(LoadInst &Load, VPValue *Addr,
+                                 const unsigned char RecipeSC,
+                                 const unsigned char ValueSC)
+      : VPRecipeBase(RecipeSC, {Addr}), Ingredient(Load) {
+    new VPValue(ValueSC, &Load, this);
+  }
+
+  VPWidenMemoryInstructionRecipe(StoreInst &Store, VPValue *Addr,
+                                 VPValue *StoredValue,
+                                 const unsigned char RecipeSC)
+      : VPRecipeBase(RecipeSC, {Addr, StoredValue}), Ingredient(Store) {}
+
 public:
   VPWidenMemoryInstructionRecipe(LoadInst &Load, VPValue *Addr, VPValue *Mask)
-      : VPRecipeBase(VPWidenMemoryInstructionSC, {Addr}), Ingredient(Load) {
-    new VPValue(VPValue::VPVMemoryInstructionSC, &Load, this);
+      : VPWidenMemoryInstructionRecipe(Load, Addr, VPWidenMemoryInstructionSC,
+                                       VPValue::VPVMemoryInstructionSC) {
     setMask(Mask);
   }
 
   VPWidenMemoryInstructionRecipe(StoreInst &Store, VPValue *Addr,
                                  VPValue *StoredValue, VPValue *Mask)
-      : VPRecipeBase(VPWidenMemoryInstructionSC, {Addr, StoredValue}),
-        Ingredient(Store) {
+      : VPWidenMemoryInstructionRecipe(Store, Addr, StoredValue,
+                                       VPWidenMemoryInstructionSC) {
     setMask(Mask);
   }
 
@@ -1514,6 +1613,60 @@ public:
   VPValue *getStoredValue() const {
     assert(isStore() && "Stored value only available for store instructions");
     return getOperand(1); // Stored value is the 2nd, mandatory operand.
+  }
+
+  /// Generate the wide load/store.
+  void execute(VPTransformState &State) override;
+
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+  /// Print the recipe.
+  void print(raw_ostream &O, const Twine &Indent,
+             VPSlotTracker &SlotTracker) const override;
+#endif
+};
+
+/// A Recipe for widening load/store operations to VP intrinsics.
+/// The recipe uses the following VPValues:
+/// - For load: Address, mask, EVL
+/// - For store: Address, stored value, mask, EVL
+class VPPredicatedWidenMemoryInstructionRecipe
+    : public VPWidenMemoryInstructionRecipe {
+
+public:
+  VPPredicatedWidenMemoryInstructionRecipe(LoadInst &Load, VPValue *Addr,
+                                           VPValue *Mask, VPValue *EVL)
+      : VPWidenMemoryInstructionRecipe(
+            Load, Addr, VPPredicatedWidenMemoryInstructionSC,
+            VPValue::VPVPredicatedMemoryInstructionSC) {
+    addOperand(Mask);
+    addOperand(EVL);
+  }
+
+  VPPredicatedWidenMemoryInstructionRecipe(StoreInst &Store, VPValue *Addr,
+                                           VPValue *StoredValue, VPValue *Mask,
+                                           VPValue *EVL)
+      : VPWidenMemoryInstructionRecipe(Store, Addr, StoredValue,
+                                       VPPredicatedWidenMemoryInstructionSC) {
+    addOperand(Mask);
+    addOperand(EVL);
+  }
+
+  /// Method to support type inquiry through isa, cast, and dyn_cast.
+  static inline bool classof(const VPDef *D) {
+    return D->getVPDefID() ==
+           VPRecipeBase::VPPredicatedWidenMemoryInstructionSC;
+  }
+
+  /// Return the mask used by this recipe.
+  VPValue *getMask() const {
+    // Mask is the second last, mandatory operand.
+    return getOperand(getNumOperands() - 2);
+  }
+
+  /// Return the EVL used by this recipe.
+  VPValue *getEVL() const {
+    // EVL is the last, mandatory operand.
+    return getOperand(getNumOperands() - 1);
   }
 
   /// Generate the wide load/store.

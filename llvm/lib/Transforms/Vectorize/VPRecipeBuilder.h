@@ -51,6 +51,11 @@ class VPRecipeBuilder {
   EdgeMaskCacheTy EdgeMaskCache;
   BlockMaskCacheTy BlockMaskCache;
 
+  /// Hold a mapping of Basic block to the canonical vector induction VPValue
+  /// inserted for that block or the primary induction if it exists.
+  using IVCacheTy = DenseMap<VPBasicBlock *, VPValue *>;
+  IVCacheTy IVCache;
+
   // VPlan-VPlan transformations support: Hold a mapping from ingredients to
   // their recipe. To save on memory, only do so for selected ingredients,
   // marked by having a nullptr entry in this map.
@@ -103,6 +108,9 @@ class VPRecipeBuilder {
 
   /// Return a VPRecipeOrValueTy with VPRecipeBase * being set. This can be used to force the use as VPRecipeBase* for recipe sub-types that also inherit from VPValue.
   VPRecipeOrVPValueTy toVPRecipeResult(VPRecipeBase *R) const { return R; }
+
+  /// Insert and Cache Induction Variable
+  VPValue *getOrCreateIV(VPBasicBlock *VPBB, VPlanPtr &Plan);
 
 public:
   VPRecipeBuilder(Loop *OrigLoop, const TargetLibraryInfo *TLI,

@@ -1737,6 +1737,19 @@ public:
   void Unparse(const ActualArg::PercentVal &x) {
     Word("%VAL("), Walk(x.v), Put(')');
   }
+  void Unparse(const ConditionalArg &x) { // F2023:R1526
+    Put("( ");
+    const auto &branches{std::get<std::list<ConditionalArg::Branch>>(x.t)};
+    for (const auto &branch : branches) {
+      Walk(std::get<ScalarLogicalExpr>(branch.t));
+      Put(" ? ");
+      Walk(std::get<ConditionalArg::Consequent>(branch.t));
+      Put(" : ");
+    }
+    Walk(std::get<ConditionalArg::Consequent>(x.t));
+    Put(" )");
+  }
+  void Post(const Nil &) { Word(".NIL."); } // part of F2023:R1527
   void Before(const AltReturnSpec &) { // R1525
     Put('*');
   }

@@ -4830,6 +4830,10 @@ void ArgumentAnalyzer::Analyze(
               actual->set_isPercentVal();
             }
           },
+          [&](const parser::ConditionalArg &) {
+            context_.Say(
+                "TODO: conditional arguments are not yet supported"_err_en_US);
+          },
       },
       std::get<parser::ActualArg>(arg.t).u);
   if (actual) {

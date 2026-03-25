@@ -165,11 +165,14 @@ std::optional<TypeAndShape> TypeAndShape::Characterize(
     const ActualArgument &arg, FoldingContext &context, bool invariantOnly) {
   if (const auto *expr{arg.UnwrapExpr()}) {
     return Characterize(*expr, context, invariantOnly);
-  } else if (const Symbol * assumed{arg.GetAssumedTypeDummy()}) {
-    return Characterize(*assumed, context, invariantOnly);
-  } else {
-    return std::nullopt;
   }
+  if (const Symbol *assumed{arg.GetAssumedTypeDummy()}) {
+    return Characterize(*assumed, context, invariantOnly);
+  }
+  if (const auto *expr{arg.GetConditionalArgExpr()}) {
+    return Characterize(*expr, context, invariantOnly);
+  }
+  return std::nullopt;
 }
 
 bool TypeAndShape::IsCompatibleWith(parser::ContextualMessages &messages,
@@ -958,11 +961,14 @@ std::optional<DummyArgument> DummyArgument::FromActual(std::string &&name,
     bool forImplicitInterface) {
   if (const auto *expr{arg.UnwrapExpr()}) {
     return FromActual(std::move(name), *expr, context, forImplicitInterface);
-  } else if (arg.GetAssumedTypeDummy()) {
-    return std::nullopt;
-  } else {
-    return DummyArgument{AlternateReturn{}};
   }
+  if (arg.GetAssumedTypeDummy()) {
+    return std::nullopt;
+  }
+  if (const auto *expr{arg.GetConditionalArgExpr()}) {
+    return FromActual(std::move(name), *expr, context, forImplicitInterface);
+  }
+  return DummyArgument{AlternateReturn{}};
 }
 
 bool DummyArgument::IsOptional() const {

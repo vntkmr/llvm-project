@@ -900,6 +900,18 @@ auto GetShapeHelper::operator()(const Substring &substring) const -> Result {
   return (*this)(substring.parent());
 }
 
+auto GetShapeHelper::operator()(const ActualArgument &arg) const -> Result {
+  // For ConditionalArg, uses the first non-.NIL. consequent-arg for shape,
+  // as all consequent-args are required to have the same rank (F2023 C1539).
+  if (const auto *expr{arg.GetArgExpr()}) {
+    return (*this)(*expr);
+  }
+  if (const auto *assumed{arg.GetAssumedTypeDummy()}) {
+    return (*this)(*assumed);
+  }
+  return std::nullopt;
+}
+
 auto GetShapeHelper::operator()(const ProcedureRef &call) const -> Result {
   if (call.Rank() == 0) {
     return ScalarShape();

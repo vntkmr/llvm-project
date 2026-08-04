@@ -15,6 +15,7 @@
 #include "flang/Lower/CUDA.h"
 #include "flang/Lower/ConvertExprToHLFIR.h"
 #include "flang/Lower/ConvertProcedureDesignator.h"
+#include "flang/Lower/ConvertType.h"
 #include "flang/Lower/ConvertVariable.h"
 #include "flang/Lower/CustomIntrinsicCall.h"
 #include "flang/Lower/HlfirIntrinsics.h"
@@ -1318,6 +1319,17 @@ static bool isParameterObjectOrSubObject(hlfir::Entity entity) {
   return foundParameter;
 }
 
+/// Get the expression standing for an actual argument in type and
+/// classification queries. F2023 C1538/C1539 require every consequent-arg of a
+/// conditional argument to share declared type, kind parameters and rank, so
+/// the first non-.NIL. consequent is representative of the whole chain.
+static const Fortran::lower::SomeExpr *
+getRepresentativeExpr(const Fortran::evaluate::ActualArgument &arg) {
+  if (const auto *condArg = arg.GetConditionalArg())
+    return condArg->FirstNonNilConsequent();
+  return arg.UnwrapExpr();
+}
+
 /// When dummy is not ALLOCATABLE, POINTER and is not passed in register,
 /// prepare the actual argument according to the interface. Do as needed:
 /// - address element if this is an array argument in an elemental call.
@@ -1530,7 +1542,7 @@ static PreparedDummyArgument preparePresentUserCallActualArgument(
       entity = genCopyIn(entity, mustDoCopyOut);
     }
   } else {
-    const Fortran::lower::SomeExpr *expr = arg.entity->UnwrapExpr();
+    const Fortran::lower::SomeExpr *expr = getRepresentativeExpr(*arg.entity);
     assert(expr && "expression actual argument cannot be an assumed type");
     // The actual is an expression value, place it into a temporary
     // and register the temporary destruction after the call.
@@ -1827,6 +1839,9 @@ void prepareUserCallArguments(
       caller.placeInput(arg, actual);
     } break;
     case PassBy::MutableBox: {
+      if (arg.entity->isConditionalArg())
+        TODO(loc, "conditional argument associated with a POINTER or "
+                  "ALLOCATABLE dummy argument");
       const Fortran::lower::SomeExpr *expr = arg.entity->UnwrapExpr();
       // C709 and C710.
       assert(expr && "cannot pass TYPE(*) to POINTER or ALLOCATABLE");
@@ -2884,6 +2899,134 @@ private:
 };
 } // namespace
 
+/// Recursively build a nested fir.if chain for a ConditionalArg node.
+/// Each node has: condition, consequent, tail.
+/// The chain yields the *address* of the selected consequent-arg, not its
+/// value, so that variable consequents keep their identity as required for
+/// INTENT(OUT) and INTENT(INOUT) dummy arguments (C1541). A presence flag is
+/// yielded alongside it only when the chain contains a .NIL. consequent.
+/// Generated structure:
+///   %cond = evaluate condition
+///   %result:2 = fir.if %cond -> (!fir.ref<T>, i1) {
+///     fir.result <consequent address>, true
+///   } else {
+///     <recurse on tail OR generate terminal consequent>
+///   }
+static std::pair<mlir::Value, mlir::Value> buildConditionalArgIfChain(
+    mlir::Location loc, fir::FirOpBuilder &builder, CallContext &callContext,
+    mlir::Type resultType, bool withPresenceFlag,
+    const Fortran::evaluate::ActualArgument::ConditionalArg &node) {
+  using Consequent =
+      Fortran::evaluate::ActualArgument::ConditionalArg::Consequent;
+  llvm::SmallVector<mlir::Type, 2> ifResultTypes{resultType};
+  if (withPresenceFlag)
+    ifResultTypes.push_back(builder.getI1Type());
+
+  // Emit a fir.result with the given (address, isPresent) pair.
+  auto genResult = [&](std::pair<mlir::Value, mlir::Value> vals) {
+    llvm::SmallVector<mlir::Value, 2> results{vals.first};
+    if (withPresenceFlag)
+      results.push_back(vals.second);
+    fir::ResultOp::create(builder, loc, results);
+  };
+
+  // Lower a Consequent to (address, isPresent) without emitting fir.result.
+  auto lowerConsequent =
+      [&](const Consequent &cons) -> std::pair<mlir::Value, mlir::Value> {
+    if (!cons) {
+      assert(withPresenceFlag && ".NIL. consequent needs a presence flag");
+      return {builder.genAbsentOp(loc, resultType),
+              builder.createBool(loc, false)};
+    }
+    hlfir::EntityWithAttributes entity = Fortran::lower::convertExprToHLFIR(
+        loc, callContext.converter, cons->value(), callContext.symMap,
+        callContext.stmtCtx);
+    if (entity.isMutableBox())
+      TODO(loc, "conditional argument with a POINTER or ALLOCATABLE "
+                "consequent-arg");
+    mlir::Value addr;
+    if (entity.isVariable()) {
+      addr = hlfir::genVariableRawAddress(loc, builder, entity);
+    } else {
+      // An expression consequent-arg has no address, so materialize it. The
+      // alloca is hoisted to the function entry block by createTemporary, so
+      // it does not escape the fir.if region it is created in.
+      mlir::Type eleType = fir::unwrapRefType(resultType);
+      mlir::Value temp = builder.createTemporary(loc, eleType, ".cond.arg.tmp");
+      fir::StoreOp::create(builder, loc,
+                           builder.createConvert(loc, eleType, entity), temp);
+      addr = temp;
+    }
+    return {builder.createConvert(loc, resultType, addr),
+            withPresenceFlag ? builder.createBool(loc, true) : mlir::Value{}};
+  };
+
+  // Evaluate the condition (wrap Expr<SomeLogical> into SomeExpr). A nested
+  // statement context keeps any clean-up for the condition inside the region
+  // the condition is evaluated in.
+  mlir::Value condition;
+  {
+    Fortran::lower::StatementContext condStmtCtx;
+    Fortran::lower::SomeExpr condExpr{Fortran::evaluate::AsGenericExpr(
+        Fortran::common::Clone(node.condition()))};
+    hlfir::EntityWithAttributes condEntity = Fortran::lower::convertExprToHLFIR(
+        loc, callContext.converter, condExpr, callContext.symMap, condStmtCtx);
+    mlir::Value loaded = hlfir::loadTrivialScalar(loc, builder, condEntity);
+    condition = builder.createConvert(loc, builder.getI1Type(), loaded);
+  }
+
+  auto ifOp = builder.genIfOp(loc, ifResultTypes, condition,
+                              /*withElseRegion=*/true);
+  ifOp.genThen([&]() { genResult(lowerConsequent(node.consequent())); });
+  ifOp.genElse([&]() {
+    node.VisitTail(
+        [&](const Fortran::evaluate::ActualArgument::ConditionalArg &inner) {
+          genResult(buildConditionalArgIfChain(
+              loc, builder, callContext, resultType, withPresenceFlag, inner));
+        },
+        [&](const Consequent &terminalCons) {
+          genResult(lowerConsequent(terminalCons));
+        });
+  });
+  auto results = ifOp.getResults();
+  return {results[0], withPresenceFlag ? results[1] : mlir::Value{}};
+}
+
+/// Lower a ConditionalArg (F2023 R1526) into a fir.if chain that lazily
+/// evaluates conditions and yields the address of the chosen consequent-arg.
+/// If .NIL. is possible, also yields an isPresent boolean. The returned
+/// PreparedActualArgument carries the entity and optional isPresent value.
+static Fortran::lower::PreparedActualArgument lowerConditionalArg(
+    mlir::Location loc,
+    const Fortran::evaluate::ActualArgument::ConditionalArg &condArg,
+    CallContext &callContext) {
+  fir::FirOpBuilder &builder = callContext.getBuilder();
+
+  // C1538/C1539: every consequent-arg has the same declared type, kind type
+  // parameters and rank, so the first non-.NIL. one gives the type of the
+  // whole conditional argument.
+  const Fortran::evaluate::Expr<Fortran::evaluate::SomeType> *reprExpr =
+      condArg.FirstNonNilConsequent();
+  assert(reprExpr &&
+         "ConditionalArg must have at least one non-NIL consequent");
+  mlir::Type eleType = Fortran::lower::translateSomeExprToFIRType(
+      callContext.converter, *reprExpr);
+  // Character, derived type and array consequent-args must be selected as
+  // descriptors carrying length parameters and shape, and lowering them may
+  // register clean-ups that cannot escape the fir.if regions.
+  if (!fir::isa_trivial(eleType))
+    TODO(loc, "lowering conditional argument of character, derived or array "
+              "type");
+
+  auto [addr, isPresent] = buildConditionalArgIfChain(
+      loc, builder, callContext, fir::ReferenceType::get(eleType),
+      condArg.HasNilConsequent(), condArg);
+
+  return Fortran::lower::PreparedActualArgument{
+      hlfir::Entity{addr},
+      isPresent ? std::optional<mlir::Value>{isPresent} : std::nullopt};
+}
+
 static std::optional<mlir::Value>
 genIsPresentIfArgMaybeAbsent(mlir::Location loc, hlfir::Entity actual,
                              const Fortran::lower::SomeExpr &expr,
@@ -3055,8 +3198,11 @@ genIntrinsicRef(const Fortran::evaluate::SpecificIntrinsic *intrinsic,
       loweredActuals.push_back(std::nullopt);
       continue;
     }
-    if (arg.value()->isConditionalArg())
-      TODO(loc, "lowering conditional arguments to HLFIR");
+    if (arg.value()->isConditionalArg()) {
+      const auto *condArg = arg.value()->GetConditionalArg();
+      loweredActuals.push_back(lowerConditionalArg(loc, *condArg, callContext));
+      continue;
+    }
     auto *expr =
         Fortran::evaluate::UnwrapExpr<Fortran::lower::SomeExpr>(arg.value());
     if (!expr) {
@@ -3183,8 +3329,12 @@ genProcedureRef(CallContext &callContext) {
            Fortran::lower::CallerInterface>::PassedEntity &arg :
        caller.getPassedArguments())
     if (const auto *actual = arg.entity) {
-      if (actual->isConditionalArg())
-        TODO(loc, "lowering conditional arguments to HLFIR");
+      if (actual->isConditionalArg()) {
+        const auto *condArg = actual->GetConditionalArg();
+        loweredActuals.push_back(
+            lowerConditionalArg(loc, *condArg, callContext));
+        continue;
+      }
       const auto *expr = actual->UnwrapExpr();
       if (!expr) {
         // TYPE(*) actual argument.

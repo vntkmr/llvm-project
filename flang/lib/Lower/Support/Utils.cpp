@@ -210,6 +210,12 @@ public:
   static unsigned getHashValue(const Fortran::evaluate::ActualArgument &x) {
     if (const Fortran::evaluate::Symbol *sym = x.GetAssumedTypeDummy())
       return getHashValue(*sym);
+    if (const auto *condArg = x.GetConditionalArg()) {
+      // Hash based on the first non-NIL consequent expression.
+      if (const auto *expr = condArg->FirstNonNilConsequent())
+        return getHashValue(*expr) * 157u;
+      return 163u;
+    }
     return getHashValue(*x.UnwrapExpr());
   }
   static unsigned
@@ -479,7 +485,12 @@ public:
         return isEqual(*xs, *ys);
       return false;
     }
-    return !y.GetAssumedTypeDummy() &&
+    if (const auto *xc = x.GetConditionalArg()) {
+      if (const auto *yc = y.GetConditionalArg())
+        return *xc == *yc;
+      return false;
+    }
+    return !y.GetAssumedTypeDummy() && !y.isConditionalArg() &&
            isEqual(*x.UnwrapExpr(), *y.UnwrapExpr());
   }
   static bool isEqual(const Fortran::evaluate::ProcedureDesignator &x,

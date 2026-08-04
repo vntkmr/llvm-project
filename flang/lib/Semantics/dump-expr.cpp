@@ -163,10 +163,40 @@ void DumpEvaluateExpr::Show(const evaluate::ComplexPart &x) {
   Outdent();
 }
 
+void DumpEvaluateExpr::Show(const evaluate::ActualArgument::ConditionalArg &x) {
+  Indent("conditional arg");
+  Indent("condition");
+  Show(x.condition());
+  Outdent();
+  if (const auto &cons{x.consequent()}) {
+    Indent("consequent");
+    Show(cons->value());
+    Outdent();
+  } else {
+    Print(".NIL.");
+  }
+  x.VisitTail(
+      [&](const evaluate::ActualArgument::ConditionalArg &inner) {
+        Show(inner);
+      },
+      [&](const evaluate::ActualArgument::ConditionalArg::Consequent &cons) {
+        if (cons) {
+          Indent("else consequent");
+          Show(cons->value());
+          Outdent();
+        } else {
+          Print("else .NIL.");
+        }
+      });
+  Outdent();
+}
+
 void DumpEvaluateExpr::Show(const evaluate::ActualArgument &x) {
   Indent("actual argument");
   if (const auto *symbol{x.GetAssumedTypeDummy()}) {
     Show(*symbol);
+  } else if (const auto *condArg{x.GetConditionalArg()}) {
+    Show(*condArg);
   } else {
     Show(x.UnwrapExpr());
   }

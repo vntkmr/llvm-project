@@ -152,6 +152,7 @@ private:
   void Show(const evaluate::SpecificIntrinsic &);
   void Show(const evaluate::ProcedureDesignator &x);
   void Show(const evaluate::ActualArgument &x);
+  void Show(const evaluate::ActualArgument::ConditionalArg &x);
   void Show(const evaluate::ProcedureRef &x) {
     Indent("procedure ref");
     Show(x.proc());
